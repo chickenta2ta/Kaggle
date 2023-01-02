@@ -4,5 +4,9 @@
     "editor.formatOnSave": true,
     "editor.codeActionsOnSave": {
         "source.organizeImports": true
-    }
+    },
+    "python.linting.flake8Args": [
+        "--max-line-length",
+        "88"
+    ]
 }
