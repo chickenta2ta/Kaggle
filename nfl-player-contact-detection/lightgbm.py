@@ -39,7 +39,7 @@ def join_baseline_helmets_to_labels(
     labels,
     baseline_helmets,
     video_metadata,
-    baseline_helmets_columns=["view", "left", "width", "top", "height"],
+    baseline_helmets_columns=["left", "width", "top", "height"],
     fps=59.94,
 ):
     video_metadata = video_metadata[["game_play", "view", "start_time"]]
@@ -52,7 +52,7 @@ def join_baseline_helmets_to_labels(
     ) + pd.to_timedelta(baseline_helmets["frame"] / fps, unit="S")
 
     baseline_helmets = baseline_helmets[
-        ["game_play", "nfl_player_id", "frame_time"] + baseline_helmets_columns
+        ["game_play", "view", "nfl_player_id", "frame_time"] + baseline_helmets_columns
     ]
 
     labels["datetime"] = pd.to_datetime(labels["datetime"])
@@ -93,6 +93,14 @@ def join_baseline_helmets_to_labels(
     baseline_helmets = baseline_helmets.merge(
         datetime_to_frame_time, how="right", on=["game_play", "frame_time"]
     )
+
+    # Make the combination of game_play, view, nfl_player_id and frame_time unique
+    baseline_helmets = baseline_helmets[
+        ~baseline_helmets.duplicated(
+            subset=["game_play", "view", "nfl_player_id", "frame_time"]
+        )
+    ]
+
     baseline_helmets.drop(columns="datetime", inplace=True)
 
     labels = labels.astype({"nfl_player_id_1": "string", "nfl_player_id_2": "string"})
@@ -100,23 +108,49 @@ def join_baseline_helmets_to_labels(
 
     feature_columns = []
     for i in range(1, 3):
-        columns = {
-            column_name: column_name + f"_{i}"
-            for column_name in baseline_helmets_columns
-        }
+        for view in ["Sideline", "Endzone"]:
+            view_lower = view.lower()
+            columns = {
+                column_name: column_name + f"_{i}_{view_lower}"
+                for column_name in baseline_helmets_columns
+            }
 
-        labels = labels.merge(
-            baseline_helmets,
-            how="right",
-            left_on=["game_play", f"nfl_player_id_{i}", "frame_time"],
-            right_on=["game_play", "nfl_player_id", "frame_time"],
-        )
-        labels.rename(columns=columns, inplace=True)
-        labels.drop(columns="nfl_player_id", inplace=True)
+            baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view]
 
-        feature_columns += columns.values()
+            labels = labels.merge(
+                baseline_helmets_view,
+                how="left",
+                left_on=["game_play", f"nfl_player_id_{i}", "frame_time"],
+                right_on=["game_play", "nfl_player_id", "frame_time"],
+            )
+            labels.rename(columns=columns, inplace=True)
+            labels.drop(columns=["view", "nfl_player_id"], inplace=True)
 
-    if "view" in baseline_helmets_columns:
-        labels = labels[labels["view_1"] == labels["view_2"]]
+            feature_columns += columns.values()
 
     return labels, feature_columns
+
+
+def calculate_iou(labels):
+    labels["right_1"] = labels["left_1"] + labels["width_1"]
+    labels["dx"] = labels["right_1"] - labels["left_2"]
+
+    labels["bottom_1"] = labels["top_1"] + labels["height_1"]
+    labels["dy"] = labels["bottom_1"] - labels["top_2"]
+
+    has_intersection = (labels["dx"] > 0) & (labels["dy"] > 0)
+
+    area_of_intersection = labels["dx"] * labels["dy"]
+    area_of_intersection[~has_intersection] = 0
+
+    area_of_union = (
+        (labels["height_1"] * labels["width_1"])
+        + (labels["height_2"] * labels["width_2"])
+        - area_of_intersection
+    )
+
+    labels["iou"] = area_of_intersection / area_of_union
+
+    labels.drop(columns=["right_1", "dx", "bottom_1", "dy"], inplace=True)
+
+    return labels
