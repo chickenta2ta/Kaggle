@@ -127,6 +127,8 @@ def join_baseline_helmets_to_labels(
 
             feature_columns += columns.values()
 
+    labels.drop(columns="frame_time", inplace=True)
+
     return labels, feature_columns
 
 
