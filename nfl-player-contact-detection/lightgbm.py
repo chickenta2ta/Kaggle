@@ -1,5 +1,6 @@
 import os
 
+import cv2
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -132,25 +133,47 @@ def join_baseline_helmets_to_labels(
 
 
 def calculate_iou(labels):
-    labels["right_1"] = labels["left_1"] + labels["width_1"]
-    labels["dx"] = labels["right_1"] - labels["left_2"]
+    for view in ["sideline", "endzone"]:
+        labels[f"right_1_{view}"] = labels[f"left_1_{view}"] + labels[f"width_1_{view}"]
+        labels[f"right_2_{view}"] = labels[f"left_2_{view}"] + labels[f"width_2_{view}"]
+        labels[f"dx_{view}"] = labels[[f"right_1_{view}", f"right_2_{view}"]].min(
+            axis=1, skipna=False
+        ) - labels[[f"left_1_{view}", f"left_2_{view}"]].max(axis=1, skipna=False)
 
-    labels["bottom_1"] = labels["top_1"] + labels["height_1"]
-    labels["dy"] = labels["bottom_1"] - labels["top_2"]
+        labels[f"bottom_1_{view}"] = (
+            labels[f"top_1_{view}"] + labels[f"height_1_{view}"]
+        )
+        labels[f"bottom_2_{view}"] = (
+            labels[f"top_2_{view}"] + labels[f"height_2_{view}"]
+        )
+        labels[f"dy_{view}"] = labels[[f"bottom_1_{view}", f"bottom_2_{view}"]].min(
+            axis=1, skipna=False
+        ) - labels[[f"top_1_{view}", f"top_2_{view}"]].max(axis=1, skipna=False)
 
-    has_intersection = (labels["dx"] > 0) & (labels["dy"] > 0)
+        has_intersection = (labels[f"dx_{view}"] > 0) & (labels[f"dy_{view}"] > 0)
 
-    area_of_intersection = labels["dx"] * labels["dy"]
-    area_of_intersection[~has_intersection] = 0
+        area_of_intersection = labels[f"dx_{view}"] * labels[f"dy_{view}"]
+        area_of_intersection[~has_intersection] = 0
 
-    area_of_union = (
-        (labels["height_1"] * labels["width_1"])
-        + (labels["height_2"] * labels["width_2"])
-        - area_of_intersection
-    )
+        area_of_union = (
+            (labels[f"height_1_{view}"] * labels[f"width_1_{view}"])
+            + (labels[f"height_2_{view}"] * labels[f"width_2_{view}"])
+            - area_of_intersection
+        )
 
-    labels["iou"] = area_of_intersection / area_of_union
+        labels[f"iou_{view}"] = area_of_intersection / area_of_union
+        labels.fillna(value={f"iou_{view}": 0})
 
-    labels.drop(columns=["right_1", "dx", "bottom_1", "dy"], inplace=True)
+        labels.drop(
+            columns=[
+                f"right_1_{view}",
+                f"right_2_{view}",
+                f"dx_{view}",
+                f"bottom_1_{view}",
+                f"bottom_2_{view}",
+                f"dy_{view}",
+            ],
+            inplace=True,
+        )
 
     return labels
