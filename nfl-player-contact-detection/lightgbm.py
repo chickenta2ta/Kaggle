@@ -255,3 +255,16 @@ def create_features(
     feature_columns.append("g_flag")
 
     return labels, feature_columns
+
+
+def split_contact_id(sample_submission):
+    sample_submission[
+        ["game", "play", "step", "nfl_player_id_1", "nfl_player_id_2"]
+    ] = sample_submission["contact_id"].str.split("_", expand=True)
+
+    sample_submission["game_play"] = sample_submission["game"].str.cat(
+        sample_submission["play"], sep="_"
+    )
+    sample_submission.drop(columns=["game", "play"], inplace=True)
+
+    return sample_submission
