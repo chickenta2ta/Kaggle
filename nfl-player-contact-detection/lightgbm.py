@@ -29,6 +29,11 @@ train_baseline_helmets = pd.read_csv(
 )
 train_video_metadata = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_VIDEO_METADATA))
 
+sample_submission = pd.read_csv(os.path.join(PATH_TO_INPUT, SAMPLE_SUBMISSION))
+test_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_PLAYER_TRACKING))
+test_baseline_helmets = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_BASELINE_HELMETS))
+test_video_metadata = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_VIDEO_METADATA))
+
 # Endzone2 should be ignored as it is a merging error or something
 train_baseline_helmets = train_baseline_helmets[
     train_baseline_helmets["view"] != "Endzone2"
@@ -269,6 +274,23 @@ def split_contact_id(sample_submission):
     return sample_submission
 
 
+def join_datetime_to_labels(sample_submission, player_tracking):
+    player_tracking = player_tracking[["game_play", "datetime", "step"]]
+
+    player_tracking = player_tracking[
+        ~player_tracking.duplicated(subset=["game_play", "step"])
+    ]
+
+    sample_submission = sample_submission.astype({"step": "string"})
+    player_tracking = player_tracking.astype({"step": "string"})
+
+    sample_submission = sample_submission.merge(
+        player_tracking, how="left", on=["game_play", "step"]
+    )
+
+    return sample_submission
+
+
 def matthews_corrcoef_(x, y_train, y_pred_train):
     mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
     return -mcc
@@ -315,3 +337,30 @@ for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
 
     models.append(model)
     scores.append(score)
+
+sample_submission = split_contact_id(sample_submission)
+sample_submission = join_datetime_to_labels(sample_submission, test_player_tracking)
+
+sample_submission, feature_columns = create_features(
+    sample_submission, test_player_tracking, test_baseline_helmets, test_video_metadata
+)
+
+X_test = sample_submission[feature_columns]
+y_pred_train = np.zeros(len(X_train))
+y_pred_test = np.zeros(len(X_test))
+
+for model in models:
+    y_pred_train += model.predict(X_train, num_iteration=model.best_iteration) / len(
+        models
+    )
+    y_pred_test += model.predict(X_test, num_iteration=model.best_iteration) / len(
+        models
+    )
+
+x0 = [0.5]
+res = minimize(matthews_corrcoef_, x0, args=(y_train, y_pred_train))
+
+sample_submission["contact"] = (y_pred_test > res.x[0]).astype("int")
+sample_submission[["contact_id", "contact"]].to_csv(
+    os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
+)
