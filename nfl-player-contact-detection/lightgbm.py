@@ -1,6 +1,5 @@
 import os
 
-import cv2
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -273,3 +272,46 @@ def split_contact_id(sample_submission):
 def matthews_corrcoef_(x, y_train, y_pred_train):
     mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
     return -mcc
+
+
+train_labels, feature_columns = create_features(
+    train_labels, train_player_tracking, train_baseline_helmets, train_video_metadata
+)
+
+X_train = train_labels[feature_columns]
+y_train = train_labels["contact"]
+
+param = {
+    "objective": "binary",
+    "seed": 42,
+    "force_row_wise": True,
+    "verbosity": -1,
+    "metric": "auc",
+}
+
+skf = StratifiedKFold(shuffle=True, random_state=42)
+
+models = []
+scores = []
+for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
+    print(f"Fold {i + 1}:")
+
+    X_train_fold, y_train_fold = X_train.loc[train_index], y_train[train_index]
+    X_test_fold, y_test_fold = X_train.loc[test_index], y_train[test_index]
+
+    train_data = lgb.Dataset(X_train_fold, label=y_train_fold)
+    validation_data = lgb.Dataset(X_test_fold, label=y_test_fold, reference=train_data)
+
+    model = lgb.train(
+        param,
+        train_data,
+        num_boost_round=10_000,
+        valid_sets=[validation_data],
+        callbacks=[lgb.early_stopping(stopping_rounds=100)],
+    )
+
+    y_pred = model.predict(X_test_fold, num_iteration=model.best_iteration)
+    score = roc_auc_score(y_test_fold, y_pred)
+
+    models.append(model)
+    scores.append(score)
