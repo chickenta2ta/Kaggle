@@ -40,7 +40,7 @@ def join_baseline_helmets_to_labels(
     labels,
     baseline_helmets,
     video_metadata,
-    baseline_helmets_columns=["left", "width", "top", "height"],
+    baseline_helmets_columns,
     fps=59.94,
 ):
     video_metadata = video_metadata[["game_play", "view", "start_time"]]
@@ -94,6 +94,7 @@ def join_baseline_helmets_to_labels(
     baseline_helmets = baseline_helmets.merge(
         datetime_to_frame_time, how="right", on=["game_play", "frame_time"]
     )
+    baseline_helmets.drop(columns="datetime", inplace=True)
 
     # Make the combination of game_play, view, nfl_player_id and frame_time unique
     baseline_helmets = baseline_helmets[
@@ -102,9 +103,6 @@ def join_baseline_helmets_to_labels(
         )
     ]
 
-    baseline_helmets.drop(columns="datetime", inplace=True)
-
-    labels = labels.astype({"nfl_player_id_1": "string", "nfl_player_id_2": "string"})
     baseline_helmets = baseline_helmets.astype({"nfl_player_id": "string"})
 
     feature_columns = []
@@ -133,6 +131,7 @@ def join_baseline_helmets_to_labels(
 
 
 def calculate_iou(labels):
+    feature_columns = []
     for view in ["sideline", "endzone"]:
         labels[f"right_1_{view}"] = labels[f"left_1_{view}"] + labels[f"width_1_{view}"]
         labels[f"right_2_{view}"] = labels[f"left_2_{view}"] + labels[f"width_2_{view}"]
@@ -176,4 +175,81 @@ def calculate_iou(labels):
             inplace=True,
         )
 
-    return labels
+        feature_columns.append(f"iou_{view}")
+
+    return labels, feature_columns
+
+
+def create_features(
+    labels,
+    player_tracking,
+    baseline_helmets,
+    video_metadata,
+    player_tracking_columns=[
+        "x_position",
+        "y_position",
+        "speed",
+        "distance",
+        "direction",
+        "orientation",
+        "acceleration",
+        "sa",
+    ],
+    baseline_helmets_columns=["left", "width", "top", "height"],
+):
+    labels = labels.astype(
+        {
+            "step": "string",
+            "nfl_player_id_1": "string",
+            "nfl_player_id_2": "string",
+        }
+    )
+    player_tracking = player_tracking.astype(
+        {"nfl_player_id": "string", "step": "string"}
+    )
+
+    player_tracking = player_tracking[
+        ["game_play", "nfl_player_id", "step"] + player_tracking_columns
+    ]
+
+    feature_columns = []
+    for i in range(1, 3):
+        columns = {
+            column_name: column_name + f"_{i}"
+            for column_name in player_tracking_columns
+        }
+
+        labels = labels.merge(
+            player_tracking,
+            how="left",
+            left_on=["game_play", "step", f"nfl_player_id_{i}"],
+            right_on=["game_play", "step", "nfl_player_id"],
+        )
+        labels.rename(columns=columns, inplace=True)
+        labels.drop(columns="nfl_player_id", inplace=True)
+
+        feature_columns += columns.values()
+
+    if (
+        "x_position" in player_tracking_columns
+        and "y_position" in player_tracking_columns
+    ):
+        labels["distance"] = np.sqrt(
+            ((labels["x_position_1"] - labels["x_position_2"]) ** 2)
+            + ((labels["y_position_1"] - labels["y_position_2"]) ** 2)
+        )
+        feature_columns.append("distance")
+
+    labels, columns = join_baseline_helmets_to_labels(
+        labels, baseline_helmets, video_metadata, baseline_helmets_columns
+    )
+    feature_columns += columns
+
+    labels, columns = calculate_iou(labels)
+    feature_columns += columns
+
+    labels["g_flag"] = labels["nfl_player_id_2"] == "G"
+    labels = labels.astype({"g_flag": "int"})
+    feature_columns.append("g_flag")
+
+    return labels, feature_columns
