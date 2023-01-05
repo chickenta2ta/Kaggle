@@ -268,3 +268,8 @@ def split_contact_id(sample_submission):
     sample_submission.drop(columns=["game", "play"], inplace=True)
 
     return sample_submission
+
+
+def matthews_corrcoef_(x, y_train, y_pred_train):
+    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
+    return -mcc
