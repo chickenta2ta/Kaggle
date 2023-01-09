@@ -281,7 +281,7 @@ for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
     model = lgb.train(
         param,
         train_data,
-        num_boost_round=500,
+        num_boost_round=10_000,
         valid_sets=[validation_data],
         callbacks=[lgb.early_stopping(stopping_rounds=100)],
     )
