@@ -1,3 +1,4 @@
+import gc
 import os
 
 import lightgbm as lgb
@@ -55,58 +56,13 @@ def join_baseline_helmets_to_labels(
     baseline_helmets["frame_time"] = pd.to_datetime(
         baseline_helmets["start_time"]
     ) + pd.to_timedelta(baseline_helmets["frame"] / fps, unit="S")
+    baseline_helmets["frame_time"] = baseline_helmets["frame_time"].dt.round("100L")
 
-    baseline_helmets = baseline_helmets[
-        ["game_play", "view", "nfl_player_id", "frame_time"] + baseline_helmets_columns
-    ]
+    baseline_helmets = baseline_helmets.groupby(
+        ["game_play", "view", "nfl_player_id", "frame_time"], as_index=False
+    ).agg({column_name: "mean" for column_name in baseline_helmets_columns})
 
     labels["datetime"] = pd.to_datetime(labels["datetime"])
-
-    datetime_to_frame_time = []
-    for game_play in labels["game_play"].unique():
-        labels_game_play = labels[labels["game_play"] == game_play].copy()
-        baseline_helmets_game_play = baseline_helmets[
-            baseline_helmets["game_play"] == game_play
-        ].copy()
-
-        labels_game_play = labels_game_play["datetime"]
-        baseline_helmets_game_play = baseline_helmets_game_play["frame_time"]
-
-        labels_game_play = labels_game_play.drop_duplicates()
-        baseline_helmets_game_play = baseline_helmets_game_play.drop_duplicates()
-
-        labels_game_play.sort_values(inplace=True)
-        baseline_helmets_game_play.sort_values(inplace=True)
-
-        merged = pd.merge_asof(
-            labels_game_play,
-            baseline_helmets_game_play,
-            left_on="datetime",
-            right_on="frame_time",
-            direction="nearest",
-        )
-        merged["game_play"] = game_play
-
-        datetime_to_frame_time.append(merged)
-
-    datetime_to_frame_time = pd.concat(datetime_to_frame_time)
-
-    labels = labels.merge(
-        datetime_to_frame_time, how="left", on=["game_play", "datetime"]
-    )
-
-    baseline_helmets = baseline_helmets.merge(
-        datetime_to_frame_time, how="right", on=["game_play", "frame_time"]
-    )
-    baseline_helmets.drop(columns="datetime", inplace=True)
-
-    # Make the combination of game_play, view, nfl_player_id and frame_time unique
-    baseline_helmets = baseline_helmets[
-        ~baseline_helmets.duplicated(
-            subset=["game_play", "view", "nfl_player_id", "frame_time"]
-        )
-    ]
-
     baseline_helmets = baseline_helmets.astype({"nfl_player_id": "string"})
 
     feature_columns = []
@@ -123,15 +79,13 @@ def join_baseline_helmets_to_labels(
             labels = labels.merge(
                 baseline_helmets_view,
                 how="left",
-                left_on=["game_play", f"nfl_player_id_{i}", "frame_time"],
+                left_on=["game_play", f"nfl_player_id_{i}", "datetime"],
                 right_on=["game_play", "nfl_player_id", "frame_time"],
             )
             labels.rename(columns=columns, inplace=True)
-            labels.drop(columns=["view", "nfl_player_id"], inplace=True)
+            labels.drop(columns=["view", "nfl_player_id", "frame_time"], inplace=True)
 
             feature_columns += columns.values()
-
-    labels.drop(columns="frame_time", inplace=True)
 
     return labels, feature_columns
 
@@ -327,7 +281,7 @@ for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
     model = lgb.train(
         param,
         train_data,
-        num_boost_round=10_000,
+        num_boost_round=500,
         valid_sets=[validation_data],
         callbacks=[lgb.early_stopping(stopping_rounds=100)],
     )
@@ -337,6 +291,19 @@ for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
 
     models.append(model)
     scores.append(score)
+
+del (
+    X_train_fold,
+    train_baseline_helmets,
+    train_index,
+    train_labels,
+    train_player_tracking,
+    train_video_metadata,
+    y_pred,
+    y_test_fold,
+    y_train_fold,
+)
+gc.collect()
 
 sample_submission = split_contact_id(sample_submission)
 sample_submission = join_datetime_to_labels(sample_submission, test_player_tracking)
