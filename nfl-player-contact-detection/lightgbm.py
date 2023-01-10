@@ -250,9 +250,74 @@ def matthews_corrcoef_(x, y_train, y_pred_train):
     return -mcc
 
 
+def add_product_and_difference_features(labels):
+    feature_columns = []
+    for column_name in [
+        "x_position",
+        "y_position",
+        "speed",
+        "distance",
+        "direction",
+        "orientation",
+        "acceleration",
+        "sa",
+    ]:
+        column_name_1 = column_name + "_1"
+        column_name_2 = column_name + "_2"
+
+        if (
+            column_name_1 in labels.columns.to_list()
+            and column_name_2 in labels.columns.to_list()
+        ):
+            column_name_product = column_name + "_product"
+            labels[column_name_product] = labels[column_name_1] * labels[column_name_2]
+
+            column_name_difference = column_name + "_difference"
+            labels[column_name_difference] = (
+                labels[column_name_1] - labels[column_name_2]
+            )
+
+            feature_columns += [column_name_product, column_name_difference]
+
+    for column_name in [
+        "iou",
+    ]:
+        column_name_sideline = column_name + "_sideline"
+        column_name_endzone = column_name + "_endzone"
+
+        if (
+            column_name_sideline in labels.columns.to_list()
+            and column_name_endzone in labels.columns.to_list()
+        ):
+            column_name_product = column_name + "_product"
+            labels[column_name_product] = (
+                labels[column_name_sideline] * labels[column_name_endzone]
+            )
+
+            column_name_difference = column_name + "_difference"
+            labels[column_name_difference] = (
+                labels[column_name_sideline] - labels[column_name_endzone]
+            )
+
+            feature_columns += [column_name_product, column_name_difference]
+
+    return labels, feature_columns
+
+
 train_labels, feature_columns = create_features(
     train_labels, train_player_tracking, train_baseline_helmets, train_video_metadata
 )
+
+DISTANCE_THRESHOLD = 2
+
+if "distance" in feature_columns:
+    train_labels = train_labels[
+        (train_labels["distance"] <= DISTANCE_THRESHOLD)
+        | (train_labels["distance"].isnull())
+    ]
+
+train_labels, columns = add_product_and_difference_features(train_labels)
+feature_columns += columns
 
 X_train = train_labels[feature_columns]
 y_train = train_labels["contact"]
@@ -312,6 +377,9 @@ sample_submission, feature_columns = create_features(
     sample_submission, test_player_tracking, test_baseline_helmets, test_video_metadata
 )
 
+sample_submission, columns = add_product_and_difference_features(sample_submission)
+feature_columns += columns
+
 X_test = sample_submission[feature_columns]
 y_pred_train = np.zeros(len(X_train))
 y_pred_test = np.zeros(len(X_test))
@@ -328,6 +396,7 @@ x0 = [0.5]
 res = minimize(matthews_corrcoef_, x0, args=(y_train, y_pred_train))
 
 sample_submission["contact"] = (y_pred_test > res.x[0]).astype("int")
+sample_submission.loc[sample_submission["distance"] > DISTANCE_THRESHOLD, "contact"] = 0
 sample_submission[["contact_id", "contact"]].to_csv(
     os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
 )
