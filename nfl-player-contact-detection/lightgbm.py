@@ -315,6 +315,7 @@ if "distance" in feature_columns:
         (train_labels["distance"] <= DISTANCE_THRESHOLD)
         | (train_labels["distance"].isnull())
     ]
+    train_labels.reset_index(drop=True, inplace=True)
 
 train_labels, columns = add_product_and_difference_features(train_labels)
 feature_columns += columns
