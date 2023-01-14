@@ -4,6 +4,7 @@ import os
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import torch
 from scipy.optimize import minimize
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
@@ -273,7 +274,7 @@ def add_product_and_difference_features(labels):
             labels[column_name_product] = labels[column_name_1] * labels[column_name_2]
 
             column_name_difference = column_name + "_difference"
-            labels[column_name_difference] = (
+            labels[column_name_difference] = abs(
                 labels[column_name_1] - labels[column_name_2]
             )
 
@@ -325,9 +326,9 @@ y_train = train_labels["contact"]
 
 param = {
     "objective": "binary",
+    "device_type": "gpu" if torch.cuda.is_available() else "cpu",
     "seed": 42,
     "force_row_wise": True,
-    "verbosity": -1,
     "metric": "auc",
 }
 
@@ -347,7 +348,7 @@ for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
     model = lgb.train(
         param,
         train_data,
-        num_boost_round=10_000,
+        num_boost_round=20_000,
         valid_sets=[validation_data],
         callbacks=[lgb.early_stopping(stopping_rounds=100)],
     )
