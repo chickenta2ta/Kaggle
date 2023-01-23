@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 from scipy.optimize import minimize
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
 PATH_TO_OUTPUT = "."
@@ -139,6 +139,9 @@ def join_player_tracking_and_baseline_helmets_to_labels(
     labels = join_baseline_helmets_to_labels(
         labels, baseline_helmets, video_metadata, baseline_helmets_columns
     )
+
+    # This column is necessary to split data in a stratified fashion
+    labels["g_flag"] = labels["nfl_player_id_2"] == "G"
 
     return labels
 
@@ -438,12 +441,69 @@ def predict_lightgbm(
     return y_test
 
 
+def predict_on_test_data(
+    models_player,
+    models_ground,
+    train_labels_player,
+    train_labels_ground,
+    test_labels,
+    feature_columns_player,
+    feature_columns_ground,
+    is_submission=True,
+):
+    test_labels_player, test_labels_ground = separate_player_and_ground(test_labels)
+
+    # Do not reset index. We rather want to keep the order of sample_submission.csv
+    # test_labels_player.reset_index(drop=True, inplace=True)
+    # test_labels_ground.reset_index(drop=True, inplace=True)
+
+    test_labels_player, _ = create_features_for_player(test_labels_player)
+    test_labels_ground, _ = create_features_for_ground(test_labels_ground)
+
+    y_name = "contact"
+    if not is_submission:
+        y_name += "_pred"
+
+    test_labels_player[y_name] = predict_lightgbm(
+        models_player,
+        train_labels_player[feature_columns_player],
+        train_labels_player["contact"],
+        test_labels_player[feature_columns_player],
+    )
+    test_labels_ground[y_name] = predict_lightgbm(
+        models_ground,
+        train_labels_ground[feature_columns_ground],
+        train_labels_ground["contact"],
+        test_labels_ground[feature_columns_ground],
+    )
+
+    test_labels = pd.concat([test_labels_player, test_labels_ground])
+    test_labels.sort_index(inplace=True)
+
+    is_close = get_indices_of_closer_than_threshold(test_labels)
+    test_labels.loc[~is_close, y_name] = 0
+
+    if is_submission:
+        test_labels[["contact_id", "contact"]].to_csv(
+            os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
+        )
+    else:
+        mcc = matthews_corrcoef(test_labels["contact"], test_labels["contact_pred"])
+        print(f"MCC: {mcc}")
+
+
 train_labels = join_player_tracking_and_baseline_helmets_to_labels(
     train_labels, train_player_tracking, train_baseline_helmets, train_video_metadata
 )
 
 del train_player_tracking, train_baseline_helmets, train_video_metadata
 gc.collect()
+
+train_labels, test_labels = train_test_split(
+    train_labels, random_state=42, stratify=train_labels[["contact", "g_flag"]]
+)
+train_labels.reset_index(drop=True, inplace=True)
+test_labels.reset_index(drop=True, inplace=True)
 
 (
     train_labels_player,
@@ -483,39 +543,26 @@ sample_submission = join_player_tracking_and_baseline_helmets_to_labels(
     sample_submission, test_player_tracking, test_baseline_helmets, test_video_metadata
 )
 
-(
-    sample_submission_player,
-    sample_submission_ground,
-) = separate_player_and_ground(sample_submission)
-
-# Do not reset index. We rather want to keep the order of sample_submission.csv
-# sample_submission_player.reset_index(drop=True, inplace=True)
-# sample_submission_ground.reset_index(drop=True, inplace=True)
-
-sample_submission_player, _ = create_features_for_player(sample_submission_player)
-sample_submission_ground, _ = create_features_for_ground(sample_submission_ground)
-
-sample_submission_player["contact"] = predict_lightgbm(
+predict_on_test_data(
     models_player,
-    train_labels_player[feature_columns_player],
-    train_labels_player["contact"],
-    sample_submission_player[feature_columns_player],
-)
-sample_submission_ground["contact"] = predict_lightgbm(
     models_ground,
-    train_labels_ground[feature_columns_ground],
-    train_labels_ground["contact"],
-    sample_submission_ground[feature_columns_ground],
+    train_labels_player,
+    train_labels_ground,
+    sample_submission,
+    feature_columns_player,
+    feature_columns_ground,
 )
 
-sample_submission = pd.concat([sample_submission_player, sample_submission_ground])
-sample_submission.sort_index(inplace=True)
-
-is_close = get_indices_of_closer_than_threshold(sample_submission)
-sample_submission.loc[~is_close, "contact"] = 0
-
-sample_submission[["contact_id", "contact"]].to_csv(
-    os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
+# Evaluate the model before submission
+predict_on_test_data(
+    models_player,
+    models_ground,
+    train_labels_player,
+    train_labels_ground,
+    test_labels,
+    feature_columns_player,
+    feature_columns_ground,
+    is_submission=False,
 )
 
 # Visualize feature importance
