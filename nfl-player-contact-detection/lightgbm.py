@@ -250,6 +250,7 @@ def create_features_for_player(
     product_columns=["speed", "distance", "acceleration"],
     difference_columns=["speed", "direction", "orientation"],
     sum_columns=["sa", "iou"],
+    is_training=True,
 ):
     feature_columns = []
 
@@ -267,6 +268,14 @@ def create_features_for_player(
             + ((labels["y_position_1"] - labels["y_position_2"]) ** 2)
         )
         feature_columns.append("distance")
+
+    if is_training:
+        is_close = get_indices_of_closer_than_threshold(labels)
+        labels = labels[is_close].copy()
+        labels.reset_index(drop=True, inplace=True)
+
+        del is_close
+        gc.collect()
 
     necessary_columns = ["left", "width", "top", "height"]
     necessary_columns = append_1_and_2(necessary_columns)
@@ -478,7 +487,9 @@ def predict_on_test_data(
     # test_labels_player.reset_index(drop=True, inplace=True)
     # test_labels_ground.reset_index(drop=True, inplace=True)
 
-    test_labels_player, _ = create_features_for_player(test_labels_player)
+    test_labels_player, _ = create_features_for_player(
+        test_labels_player, is_training=False
+    )
     test_labels_ground, _ = create_features_for_ground(test_labels_ground)
 
     y_name = "contact"
@@ -542,13 +553,6 @@ train_labels_player, feature_columns_player = create_features_for_player(
 train_labels_ground, feature_columns_ground = create_features_for_ground(
     train_labels_ground
 )
-
-is_close = get_indices_of_closer_than_threshold(train_labels_player)
-train_labels_player = train_labels_player[is_close]
-train_labels_player.reset_index(drop=True, inplace=True)
-
-del is_close
-gc.collect()
 
 models_player = train_lightgbm(
     train_labels_player[feature_columns_player], train_labels_player["contact"]
