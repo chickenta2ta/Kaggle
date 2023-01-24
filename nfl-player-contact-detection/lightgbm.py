@@ -67,15 +67,16 @@ def join_baseline_helmets_to_labels(
     labels["datetime"] = pd.to_datetime(labels["datetime"])
     baseline_helmets = baseline_helmets.astype({"nfl_player_id": "string"})
 
-    for i in range(1, 3):
-        for view in ["Sideline", "Endzone"]:
-            view_lower = view.lower()
+    for view in ["Sideline", "Endzone"]:
+        view_lower = view.lower()
+
+        baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view]
+
+        for i in range(1, 3):
             columns = {
-                column_name: column_name + f"_{i}_{view_lower}"
+                column_name: column_name + f"_{view_lower}_{i}"
                 for column_name in baseline_helmets_columns
             }
-
-            baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view]
 
             labels = labels.merge(
                 baseline_helmets_view,
@@ -198,21 +199,21 @@ def column_exists(labels, column_names):
 def calculate_iou(labels):
     feature_columns = []
     for view in ["sideline", "endzone"]:
-        labels[f"right_1_{view}"] = labels[f"left_1_{view}"] + labels[f"width_1_{view}"]
-        labels[f"right_2_{view}"] = labels[f"left_2_{view}"] + labels[f"width_2_{view}"]
-        labels[f"dx_{view}"] = labels[[f"right_1_{view}", f"right_2_{view}"]].min(
+        labels[f"right_{view}_1"] = labels[f"left_{view}_1"] + labels[f"width_{view}_1"]
+        labels[f"right_{view}_2"] = labels[f"left_{view}_2"] + labels[f"width_{view}_2"]
+        labels[f"dx_{view}"] = labels[[f"right_{view}_1", f"right_{view}_2"]].min(
             axis=1, skipna=False
-        ) - labels[[f"left_1_{view}", f"left_2_{view}"]].max(axis=1, skipna=False)
+        ) - labels[[f"left_{view}_1", f"left_{view}_2"]].max(axis=1, skipna=False)
 
-        labels[f"bottom_1_{view}"] = (
-            labels[f"top_1_{view}"] + labels[f"height_1_{view}"]
+        labels[f"bottom_{view}_1"] = (
+            labels[f"top_{view}_1"] + labels[f"height_{view}_1"]
         )
-        labels[f"bottom_2_{view}"] = (
-            labels[f"top_2_{view}"] + labels[f"height_2_{view}"]
+        labels[f"bottom_{view}_2"] = (
+            labels[f"top_{view}_2"] + labels[f"height_{view}_2"]
         )
-        labels[f"dy_{view}"] = labels[[f"bottom_1_{view}", f"bottom_2_{view}"]].min(
+        labels[f"dy_{view}"] = labels[[f"bottom_{view}_1", f"bottom_{view}_2"]].min(
             axis=1, skipna=False
-        ) - labels[[f"top_1_{view}", f"top_2_{view}"]].max(axis=1, skipna=False)
+        ) - labels[[f"top_{view}_1", f"top_{view}_2"]].max(axis=1, skipna=False)
 
         has_intersection = (labels[f"dx_{view}"] > 0) & (labels[f"dy_{view}"] > 0)
 
@@ -220,8 +221,8 @@ def calculate_iou(labels):
         area_of_intersection[~has_intersection] = 0
 
         area_of_union = (
-            (labels[f"height_1_{view}"] * labels[f"width_1_{view}"])
-            + (labels[f"height_2_{view}"] * labels[f"width_2_{view}"])
+            (labels[f"height_{view}_1"] * labels[f"width_{view}_1"])
+            + (labels[f"height_{view}_2"] * labels[f"width_{view}_2"])
             - area_of_intersection
         )
 
@@ -230,11 +231,11 @@ def calculate_iou(labels):
 
         labels.drop(
             columns=[
-                f"right_1_{view}",
-                f"right_2_{view}",
+                f"right_{view}_1",
+                f"right_{view}_2",
                 f"dx_{view}",
-                f"bottom_1_{view}",
-                f"bottom_2_{view}",
+                f"bottom_{view}_1",
+                f"bottom_{view}_2",
                 f"dy_{view}",
             ],
             inplace=True,
@@ -248,15 +249,15 @@ def calculate_iou(labels):
 def create_features_for_player(
     labels,
     product_columns=["speed", "distance", "acceleration"],
-    difference_columns=["speed", "direction", "orientation"],
+    difference_columns=["speed", "direction", "orientation", "top"],
     sum_columns=["sa", "iou"],
     is_training=True,
 ):
     feature_columns = []
 
     necessary_columns = ["top"]
-    necessary_columns = append_1_and_2(necessary_columns)
     necessary_columns = append_endzone(necessary_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
 
@@ -278,8 +279,8 @@ def create_features_for_player(
         gc.collect()
 
     necessary_columns = ["left", "width", "top", "height"]
-    necessary_columns = append_1_and_2(necessary_columns)
     necessary_columns = append_sideline_and_endzone(necessary_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
     if column_exists(labels, necessary_columns):
         labels, columns = calculate_iou(labels)
         feature_columns += columns
@@ -296,13 +297,24 @@ def create_features_for_player(
 
     # Add difference features
     for column_name in difference_columns:
-        necessary_columns = [column_name]
-        necessary_columns = append_1_and_2(necessary_columns)
-        if column_exists(labels, necessary_columns):
-            labels[column_name + "_difference"] = abs(
-                labels[column_name + "_1"] - labels[column_name + "_2"]
-            )
-            feature_columns.append(column_name + "_difference")
+        if column_name == "top":
+            necessary_columns = [column_name]
+            necessary_columns = append_endzone(necessary_columns)
+            necessary_columns = append_1_and_2(necessary_columns)
+            if column_exists(labels, necessary_columns):
+                labels[column_name + "_endzone_difference"] = abs(
+                    labels[column_name + "_endzone_1"]
+                    - labels[column_name + "_endzone_2"]
+                )
+                feature_columns.append(column_name + "_endzone_difference")
+        else:
+            necessary_columns = [column_name]
+            necessary_columns = append_1_and_2(necessary_columns)
+            if column_exists(labels, necessary_columns):
+                labels[column_name + "_difference"] = abs(
+                    labels[column_name + "_1"] - labels[column_name + "_2"]
+                )
+                feature_columns.append(column_name + "_difference")
 
     # Add sum features
     for column_name in sum_columns:
@@ -341,8 +353,8 @@ def create_features_for_ground(
         feature_columns += necessary_columns
 
     necessary_columns = ["top"]
-    necessary_columns = append_1(necessary_columns)
     necessary_columns = append_endzone(necessary_columns)
+    necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
 
