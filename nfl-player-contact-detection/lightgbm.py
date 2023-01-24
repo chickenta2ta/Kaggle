@@ -171,6 +171,14 @@ def append_1_and_2(column_names):
     return appended_column_names
 
 
+def append_endzone(column_names):
+    appended_column_names = []
+    for column_name in column_names:
+        appended_column_names.append(column_name + "_endzone")
+
+    return appended_column_names
+
+
 def append_sideline_and_endzone(column_names):
     appended_column_names = []
     for column_name in column_names:
@@ -239,12 +247,17 @@ def calculate_iou(labels):
 
 def create_features_for_player(
     labels,
-    feature_columns=[],
     product_columns=["speed", "distance", "acceleration"],
     difference_columns=["speed", "direction", "orientation"],
     sum_columns=["sa", "iou"],
 ):
-    feature_columns_copy = feature_columns.copy()
+    feature_columns = []
+
+    necessary_columns = ["top"]
+    necessary_columns = append_1_and_2(necessary_columns)
+    necessary_columns = append_endzone(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
 
     necessary_columns = ["x_position", "y_position"]
     necessary_columns = append_1_and_2(necessary_columns)
@@ -253,14 +266,14 @@ def create_features_for_player(
             ((labels["x_position_1"] - labels["x_position_2"]) ** 2)
             + ((labels["y_position_1"] - labels["y_position_2"]) ** 2)
         )
-        feature_columns_copy.append("distance")
+        feature_columns.append("distance")
 
     necessary_columns = ["left", "width", "top", "height"]
     necessary_columns = append_1_and_2(necessary_columns)
     necessary_columns = append_sideline_and_endzone(necessary_columns)
     if column_exists(labels, necessary_columns):
         labels, columns = calculate_iou(labels)
-        feature_columns_copy += columns
+        feature_columns += columns
 
     # Add product features
     for column_name in product_columns:
@@ -270,7 +283,7 @@ def create_features_for_player(
             labels[column_name + "_product"] = (
                 labels[column_name + "_1"] * labels[column_name + "_2"]
             )
-            feature_columns_copy.append(column_name + "_product")
+            feature_columns.append(column_name + "_product")
 
     # Add difference features
     for column_name in difference_columns:
@@ -280,7 +293,7 @@ def create_features_for_player(
             labels[column_name + "_difference"] = abs(
                 labels[column_name + "_1"] - labels[column_name + "_2"]
             )
-            feature_columns_copy.append(column_name + "_difference")
+            feature_columns.append(column_name + "_difference")
 
     # Add sum features
     for column_name in sum_columns:
@@ -290,20 +303,20 @@ def create_features_for_player(
             labels[column_name + "_sum"] = (
                 labels[column_name + "_1"] + labels[column_name + "_2"]
             )
-            feature_columns_copy.append(column_name + "_sum")
+            feature_columns.append(column_name + "_sum")
 
         if column_exists(labels, append_sideline_and_endzone(necessary_columns)):
             labels[column_name + "_sum"] = (
                 labels[column_name + "_sideline"] + labels[column_name + "_endzone"]
             )
-            feature_columns_copy.append(column_name + "_sum")
+            feature_columns.append(column_name + "_sum")
 
-    return labels, feature_columns_copy
+    return labels, feature_columns
 
 
 def create_features_for_ground(
     labels,
-    feature_columns=[
+    player_tracking_columns=[
         "speed",
         "distance",
         "direction",
@@ -312,11 +325,19 @@ def create_features_for_ground(
         "sa",
     ],
 ):
-    feature_columns_copy = feature_columns.copy()
+    feature_columns = []
 
-    feature_columns_copy = append_1(feature_columns_copy)
+    necessary_columns = append_1(player_tracking_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
 
-    return labels, feature_columns_copy
+    necessary_columns = ["top"]
+    necessary_columns = append_1(necessary_columns)
+    necessary_columns = append_endzone(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
+
+    return labels, feature_columns
 
 
 def get_indices_of_closer_than_threshold(labels, threshold=2):
