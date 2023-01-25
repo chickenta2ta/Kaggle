@@ -196,6 +196,22 @@ def append_sideline_and_endzone(column_names):
     return appended_column_names
 
 
+def append_product(column_names):
+    appended_column_names = []
+    for column_name in column_names:
+        appended_column_names.append(column_name + "_product")
+
+    return appended_column_names
+
+
+def append_difference(column_names):
+    appended_column_names = []
+    for column_name in column_names:
+        appended_column_names.append(column_name + "_difference")
+
+    return appended_column_names
+
+
 def column_exists(labels, column_names):
     for column_name in column_names:
         if column_name not in labels.columns.to_list():
@@ -254,6 +270,32 @@ def calculate_iou(labels):
     return labels, feature_columns
 
 
+def calculate_moving_average(labels, column_names, windows=[3, 5, 10]):
+    feature_columns = []
+
+    labels.sort_values(
+        by=["game_play", "nfl_player_id_1", "nfl_player_id_2", "step"], inplace=True
+    )
+
+    for column_name in column_names:
+        for window in windows:
+            labels[column_name + f"_moving_average_{window}"] = (
+                labels.groupby(
+                    ["game_play", "nfl_player_id_1", "nfl_player_id_2"],
+                    as_index=False,
+                    sort=False,
+                )[column_name]
+                .rolling(window)
+                .mean()[column_name]
+            )
+
+            feature_columns.append(column_name + f"_moving_average_{window}")
+
+    labels.sort_index(inplace=True)
+
+    return labels, feature_columns
+
+
 def create_features_for_player(
     labels,
     append_1_and_2_columns=["x_position", "y_position", "speed", "sa"],
@@ -263,6 +305,10 @@ def create_features_for_player(
     player_tracking_difference_columns=["speed", "direction", "orientation"],
     baseline_helmets_difference_columns=["left", "width", "top", "height"],
     sum_columns=["sa", "iou"],
+    append_endzone_1_and_2_moving_average_columns=["top"],
+    product_moving_average_columns=["speed", "acceleration"],
+    player_tracking_difference_moving_average_columns=["direction", "orientation"],
+    baseline_helmets_difference_moving_average_columns=["left", "top"],
     is_training=True,
 ):
     feature_columns = []
@@ -358,6 +404,38 @@ def create_features_for_player(
             )
             feature_columns.append(column_name + "_sum")
 
+    # Add moving average features
+    necessary_columns = ["distance"]
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_endzone(append_endzone_1_and_2_moving_average_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_product(product_moving_average_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_difference(
+        player_tracking_difference_moving_average_columns
+    )
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_sideline_and_endzone(
+        baseline_helmets_difference_moving_average_columns
+    )
+    necessary_columns = append_difference(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
     return labels, feature_columns
 
 
@@ -375,6 +453,15 @@ def create_features_for_ground(
     ],
     append_sideline_1_columns=["left", "width", "top", "height"],
     append_endzone_1_columns=["width", "top"],
+    append_1_moving_average_columns=[
+        "x_position",
+        "y_position",
+        "speed",
+        "orientation",
+        "sa",
+    ],
+    append_sideline_1_moving_average_columns=["left", "top", "height"],
+    append_endzone_1_moving_average_columns=["width", "top"],
 ):
     feature_columns = []
 
@@ -391,6 +478,24 @@ def create_features_for_ground(
     necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
+
+    # Add moving average features
+    necessary_columns = append_1(append_1_moving_average_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_sideline(append_sideline_1_moving_average_columns)
+    necessary_columns = append_1(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
+
+    necessary_columns = append_endzone(append_endzone_1_moving_average_columns)
+    necessary_columns = append_1(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_moving_average(labels, necessary_columns)
+        feature_columns += columns
 
     return labels, feature_columns
 
