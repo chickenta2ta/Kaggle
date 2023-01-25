@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 from scipy.optimize import minimize
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
 PATH_TO_OUTPUT = "."
@@ -512,6 +512,7 @@ def get_indices_of_closer_than_threshold(labels, threshold=2):
 def train_lightgbm(
     X_train,
     y_train,
+    groups,
     param={
         "objective": "binary",
         "num_boost_round": 10_000,
@@ -523,7 +524,7 @@ def train_lightgbm(
         "metric": "auc",
     },
 ):
-    skf = StratifiedKFold(shuffle=True, random_state=42)
+    group_kfold = GroupKFold()
 
     # This weird implementation is to avoid LightGBM warnings
     num_boost_round = param["num_boost_round"]
@@ -533,7 +534,9 @@ def train_lightgbm(
     del param_copy["num_boost_round"], param_copy["early_stopping_round"]
 
     models = []
-    for i, (train_index, test_index) in enumerate(skf.split(X_train, y_train)):
+    for i, (train_index, test_index) in enumerate(
+        group_kfold.split(X_train, y_train, groups)
+    ):
         print(f"Fold {i + 1}:")
 
         X_train_fold, y_train_fold = X_train.loc[train_index], y_train[train_index]
@@ -682,9 +685,11 @@ train_labels = join_player_tracking_and_baseline_helmets_to_labels(
 del train_player_tracking, train_baseline_helmets, train_video_metadata
 gc.collect()
 
-train_labels, test_labels = train_test_split(
-    train_labels, random_state=42, stratify=train_labels[["contact", "g_flag"]]
+gss = GroupShuffleSplit(n_splits=1, random_state=42)
+train_index, test_index = next(
+    gss.split(train_labels, groups=train_labels["game_play"])
 )
+train_labels, test_labels = train_labels.loc[train_index], train_labels.loc[test_index]
 train_labels.reset_index(drop=True, inplace=True)
 test_labels.reset_index(drop=True, inplace=True)
 
@@ -706,10 +711,14 @@ train_labels_ground, feature_columns_ground = create_features_for_ground(
 )
 
 models_player = train_lightgbm(
-    train_labels_player[feature_columns_player], train_labels_player["contact"]
+    train_labels_player[feature_columns_player],
+    train_labels_player["contact"],
+    train_labels_player["game_play"],
 )
 models_ground = train_lightgbm(
-    train_labels_ground[feature_columns_ground], train_labels_ground["contact"]
+    train_labels_ground[feature_columns_ground],
+    train_labels_ground["contact"],
+    train_labels_ground["game_play"],
 )
 
 sample_submission = split_contact_id(sample_submission)
