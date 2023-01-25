@@ -172,6 +172,14 @@ def append_1_and_2(column_names):
     return appended_column_names
 
 
+def append_sideline(column_names):
+    appended_column_names = []
+    for column_name in column_names:
+        appended_column_names.append(column_name + "_sideline")
+
+    return appended_column_names
+
+
 def append_endzone(column_names):
     appended_column_names = []
     for column_name in column_names:
@@ -248,18 +256,16 @@ def calculate_iou(labels):
 
 def create_features_for_player(
     labels,
+    append_1_and_2_columns=["x_position", "y_position", "speed", "sa"],
+    append_sideline_1_and_2_columns=["left", "width", "top", "height"],
+    append_endzone_1_and_2_columns=["width", "top"],
     product_columns=["speed", "distance", "acceleration"],
-    difference_columns=["speed", "direction", "orientation", "top"],
+    player_tracking_difference_columns=["speed", "direction", "orientation"],
+    baseline_helmets_difference_columns=["left", "width", "top", "height"],
     sum_columns=["sa", "iou"],
     is_training=True,
 ):
     feature_columns = []
-
-    necessary_columns = ["top"]
-    necessary_columns = append_endzone(necessary_columns)
-    necessary_columns = append_1_and_2(necessary_columns)
-    if column_exists(labels, necessary_columns):
-        feature_columns += necessary_columns
 
     necessary_columns = ["x_position", "y_position"]
     necessary_columns = append_1_and_2(necessary_columns)
@@ -277,6 +283,20 @@ def create_features_for_player(
 
         del is_close
         gc.collect()
+
+    necessary_columns = append_1_and_2(append_1_and_2_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
+
+    necessary_columns = append_sideline(append_sideline_1_and_2_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
+
+    necessary_columns = append_endzone(append_endzone_1_and_2_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
 
     necessary_columns = ["left", "width", "top", "height"]
     necessary_columns = append_sideline_and_endzone(necessary_columns)
@@ -296,25 +316,31 @@ def create_features_for_player(
             feature_columns.append(column_name + "_product")
 
     # Add difference features
-    for column_name in difference_columns:
-        if column_name == "top":
-            necessary_columns = [column_name]
-            necessary_columns = append_endzone(necessary_columns)
-            necessary_columns = append_1_and_2(necessary_columns)
-            if column_exists(labels, necessary_columns):
-                labels[column_name + "_endzone_difference"] = abs(
-                    labels[column_name + "_endzone_1"]
-                    - labels[column_name + "_endzone_2"]
-                )
-                feature_columns.append(column_name + "_endzone_difference")
-        else:
-            necessary_columns = [column_name]
-            necessary_columns = append_1_and_2(necessary_columns)
-            if column_exists(labels, necessary_columns):
-                labels[column_name + "_difference"] = abs(
-                    labels[column_name + "_1"] - labels[column_name + "_2"]
-                )
-                feature_columns.append(column_name + "_difference")
+    for column_name in player_tracking_difference_columns:
+        necessary_columns = [column_name]
+        necessary_columns = append_1_and_2(necessary_columns)
+        if column_exists(labels, necessary_columns):
+            labels[column_name + "_difference"] = abs(
+                labels[column_name + "_1"] - labels[column_name + "_2"]
+            )
+            feature_columns.append(column_name + "_difference")
+
+    for column_name in baseline_helmets_difference_columns:
+        necessary_columns = [column_name]
+        necessary_columns = append_sideline_and_endzone(necessary_columns)
+        necessary_columns = append_1_and_2(necessary_columns)
+        if column_exists(labels, necessary_columns):
+            labels[column_name + "_sideline_difference"] = abs(
+                labels[column_name + "_sideline_1"]
+                - labels[column_name + "_sideline_2"]
+            )
+            labels[column_name + "_endzone_difference"] = abs(
+                labels[column_name + "_endzone_1"] - labels[column_name + "_endzone_2"]
+            )
+            feature_columns += [
+                column_name + "_sideline_difference",
+                column_name + "_endzone_difference",
+            ]
 
     # Add sum features
     for column_name in sum_columns:
@@ -337,7 +363,9 @@ def create_features_for_player(
 
 def create_features_for_ground(
     labels,
-    player_tracking_columns=[
+    append_1_columns=[
+        "x_position",
+        "y_position",
         "speed",
         "distance",
         "direction",
@@ -345,15 +373,21 @@ def create_features_for_ground(
         "acceleration",
         "sa",
     ],
+    append_sideline_1_columns=["left", "width", "top", "height"],
+    append_endzone_1_columns=["width", "top"],
 ):
     feature_columns = []
 
-    necessary_columns = append_1(player_tracking_columns)
+    necessary_columns = append_1(append_1_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
 
-    necessary_columns = ["top"]
-    necessary_columns = append_endzone(necessary_columns)
+    necessary_columns = append_sideline(append_sideline_1_columns)
+    necessary_columns = append_1(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        feature_columns += necessary_columns
+
+    necessary_columns = append_endzone(append_endzone_1_columns)
     necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
