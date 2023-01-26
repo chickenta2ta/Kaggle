@@ -270,7 +270,7 @@ def calculate_iou(labels):
     return labels, feature_columns
 
 
-def calculate_moving_average(labels, column_names, windows=[3, 5, 10]):
+def calculate_moving_average(labels, column_names, windows=[10]):
     feature_columns = []
 
     labels.sort_values(
@@ -525,7 +525,7 @@ def train_lightgbm(
     groups,
     param={
         "objective": "binary",
-        "num_boost_round": 10_000,
+        "num_boost_round": 1_000,
         "learning_rate": 0.03,
         "device_type": "gpu" if torch.cuda.is_available() else "cpu",
         "seed": 42,
