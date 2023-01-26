@@ -279,7 +279,9 @@ def calculate_moving_average(labels, column_names, windows=[3, 5, 10]):
 
     for column_name in column_names:
         for window in windows:
-            labels[column_name + f"_moving_average_{window}"] = (
+            new_column_name = column_name + f"_moving_average_{window}"
+
+            labels[new_column_name] = (
                 labels.groupby(
                     ["game_play", "nfl_player_id_1", "nfl_player_id_2"],
                     as_index=False,
@@ -288,8 +290,9 @@ def calculate_moving_average(labels, column_names, windows=[3, 5, 10]):
                 .rolling(window)
                 .mean()[column_name]
             )
+            labels[new_column_name].fillna(labels[column_name], inplace=True)
 
-            feature_columns.append(column_name + f"_moving_average_{window}")
+            feature_columns.append(new_column_name)
 
     labels.sort_index(inplace=True)
 
@@ -482,19 +485,25 @@ def create_features_for_ground(
     # Add moving average features
     necessary_columns = append_1(append_1_moving_average_columns)
     if column_exists(labels, necessary_columns):
-        labels, columns = calculate_moving_average(labels, necessary_columns)
+        labels, columns = calculate_moving_average(
+            labels, necessary_columns, windows=[10, 20, 30]
+        )
         feature_columns += columns
 
     necessary_columns = append_sideline(append_sideline_1_moving_average_columns)
     necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
-        labels, columns = calculate_moving_average(labels, necessary_columns)
+        labels, columns = calculate_moving_average(
+            labels, necessary_columns, windows=[10, 20, 30]
+        )
         feature_columns += columns
 
     necessary_columns = append_endzone(append_endzone_1_moving_average_columns)
     necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
-        labels, columns = calculate_moving_average(labels, necessary_columns)
+        labels, columns = calculate_moving_average(
+            labels, necessary_columns, windows=[10, 20, 30]
+        )
         feature_columns += columns
 
     return labels, feature_columns
