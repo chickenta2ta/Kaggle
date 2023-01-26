@@ -290,7 +290,8 @@ def calculate_moving_average(labels, column_names, windows=[3, 5, 10]):
                 .rolling(window)
                 .mean()[column_name]
             )
-            labels[new_column_name].fillna(labels[column_name], inplace=True)
+            # Not filling NaN performed better
+            # labels[new_column_name].fillna(labels[column_name], inplace=True)
 
             feature_columns.append(new_column_name)
 
