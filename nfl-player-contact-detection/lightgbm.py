@@ -25,6 +25,10 @@ TEST_VIDEO_METADATA = "test_video_metadata.csv"
 
 SUBMISSION = "submission.csv"
 
+PATH_TO_TRAIN_FRAMES = "../input/nfl-contact-extracted-train-frames/content/work/frames/train"
+
+PATH_TO_WEIGHTS = "../input/resnet152-weightsimagenet1k-v2/resnet152-f82ba261.pth"
+
 train_labels = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_LABELS))
 train_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_PLAYER_TRACKING))
 train_baseline_helmets = pd.read_csv(
@@ -60,8 +64,19 @@ def join_baseline_helmets_to_labels(
     ) + pd.to_timedelta(baseline_helmets["frame"] / fps, unit="S")
     baseline_helmets["frame_time"] = baseline_helmets["frame_time"].dt.round("100L")
 
+    frame_time_to_frame = baseline_helmets.groupby(
+        ["game_play", "view", "frame_time"], as_index=False
+    ).agg({"frame": "median"})
+    frame_time_to_frame["frame"] = frame_time_to_frame["frame"].round()
+    baseline_helmets.drop(columns="frame", inplace=True)
+    baseline_helmets = baseline_helmets.merge(
+        frame_time_to_frame,
+        how="left",
+        on=["game_play", "view", "frame_time"]
+    )
+
     baseline_helmets = baseline_helmets.groupby(
-        ["game_play", "view", "nfl_player_id", "frame_time"], as_index=False
+        ["game_play", "view", "nfl_player_id", "frame_time", "frame"], as_index=False
     ).agg({column_name: "mean" for column_name in baseline_helmets_columns})
 
     labels["datetime"] = pd.to_datetime(labels["datetime"])
@@ -70,7 +85,17 @@ def join_baseline_helmets_to_labels(
     for view in ["Sideline", "Endzone"]:
         view_lower = view.lower()
 
-        baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view]
+        baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view].copy()
+        labels = labels.merge(
+            baseline_helmets_view[["game_play", "frame_time", "frame"]].drop_duplicates(),
+            how="left",
+            left_on=["game_play", "datetime"],
+            right_on=["game_play", "frame_time"]
+        )
+        labels.rename(columns={"frame": f"frame_{view_lower}"}, inplace=True)
+
+        labels.drop(columns="frame_time", inplace=True)
+        baseline_helmets_view.drop(columns="frame", inplace=True)
 
         for i in range(1, 3):
             columns = {
