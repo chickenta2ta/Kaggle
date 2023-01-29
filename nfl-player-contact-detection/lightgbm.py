@@ -7,8 +7,11 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy.optimize import minimize
+from skimage import io
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
+from torch.utils.data import Dataset
+from torchvision.models import resnet152
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
 PATH_TO_OUTPUT = "."
@@ -25,7 +28,9 @@ TEST_VIDEO_METADATA = "test_video_metadata.csv"
 
 SUBMISSION = "submission.csv"
 
-PATH_TO_TRAIN_FRAMES = "../input/nfl-contact-extracted-train-frames/content/work/frames/train"
+PATH_TO_TRAIN_FRAMES = (
+    "../input/nfl-contact-extracted-train-frames/content/work/frames/train"
+)
 
 PATH_TO_WEIGHTS = "../input/resnet152-weightsimagenet1k-v2/resnet152-f82ba261.pth"
 
@@ -70,9 +75,7 @@ def join_baseline_helmets_to_labels(
     frame_time_to_frame["frame"] = frame_time_to_frame["frame"].round()
     baseline_helmets.drop(columns="frame", inplace=True)
     baseline_helmets = baseline_helmets.merge(
-        frame_time_to_frame,
-        how="left",
-        on=["game_play", "view", "frame_time"]
+        frame_time_to_frame, how="left", on=["game_play", "view", "frame_time"]
     )
 
     baseline_helmets = baseline_helmets.groupby(
@@ -85,12 +88,16 @@ def join_baseline_helmets_to_labels(
     for view in ["Sideline", "Endzone"]:
         view_lower = view.lower()
 
-        baseline_helmets_view = baseline_helmets[baseline_helmets["view"] == view].copy()
+        baseline_helmets_view = baseline_helmets[
+            baseline_helmets["view"] == view
+        ].copy()
         labels = labels.merge(
-            baseline_helmets_view[["game_play", "frame_time", "frame"]].drop_duplicates(),
+            baseline_helmets_view[
+                ["game_play", "frame_time", "frame"]
+            ].drop_duplicates(),
             how="left",
             left_on=["game_play", "datetime"],
-            right_on=["game_play", "frame_time"]
+            right_on=["game_play", "frame_time"],
         )
         labels.rename(columns={"frame": f"frame_{view_lower}"}, inplace=True)
 
