@@ -12,7 +12,8 @@ from sklearn.metrics import matthews_corrcoef, roc_auc_score
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
 from torchvision import transforms
-from torchvision.models import resnet152
+
+# from torchvision.models import resnet152
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
 PATH_TO_OUTPUT = "."
@@ -129,6 +130,8 @@ def join_player_tracking_and_baseline_helmets_to_labels(
     baseline_helmets,
     video_metadata,
     player_tracking_columns=[
+        "team",
+        "position",
         "x_position",
         "y_position",
         "speed",
@@ -173,9 +176,6 @@ def join_player_tracking_and_baseline_helmets_to_labels(
     labels = join_baseline_helmets_to_labels(
         labels, baseline_helmets, video_metadata, baseline_helmets_columns
     )
-
-    # This column is necessary to split data in a stratified fashion
-    labels["g_flag"] = labels["nfl_player_id_2"] == "G"
 
     return labels
 
@@ -387,6 +387,20 @@ def create_features_for_player(
     if column_exists(labels, necessary_columns):
         labels, columns = calculate_iou(labels)
         feature_columns += columns
+
+    necessary_columns = ["team"]
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels["is_same_team"] = (labels["team_1"] == labels["team_2"]).astype("int")
+        feature_columns.append("is_same_team")
+
+    necessary_columns = ["position"]
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels["is_same_position"] = (
+            labels["position_1"] == labels["position_2"]
+        ).astype("int")
+        feature_columns.append("is_same_position")
 
     # Add product features
     for column_name in product_columns:
