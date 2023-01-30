@@ -83,6 +83,8 @@ def join_baseline_helmets_to_labels(
     ).agg({column_name: "mean" for column_name in baseline_helmets_columns})
 
     labels["datetime"] = pd.to_datetime(labels["datetime"])
+    labels["datetime"] = labels["datetime"].dt.round("100L")
+
     baseline_helmets = baseline_helmets.astype({"nfl_player_id": "string"})
 
     for view in ["Sideline", "Endzone"]:
