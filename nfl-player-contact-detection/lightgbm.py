@@ -1,6 +1,7 @@
 import gc
 import os
 
+import cv2
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,10 +9,11 @@ import pandas as pd
 import torch
 from scipy.optimize import minimize
 from skimage import io, transform
-from sklearn.metrics import matthews_corrcoef, roc_auc_score
+from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
 from torchvision import transforms
+from torchvision.transforms import Lambda
 
 # from torchvision.models import resnet152
 
@@ -93,6 +95,7 @@ def join_baseline_helmets_to_labels(
         baseline_helmets_view = baseline_helmets[
             baseline_helmets["view"] == view
         ].copy()
+
         labels = labels.merge(
             baseline_helmets_view[
                 ["game_play", "frame_time", "frame"]
@@ -612,9 +615,10 @@ def train_lightgbm(
             callbacks=[lgb.early_stopping(stopping_rounds=stopping_rounds)],
         )
 
-        y_pred = model.predict(X_test_fold, num_iteration=model.best_iteration)
-        score = roc_auc_score(y_test_fold, y_pred)
-        print(f"Score: {score}")
+        models = [model]
+        y_pred = predict_lightgbm(models, X_train_fold, y_train_fold, X_test_fold)
+        mcc = matthews_corrcoef(y_test_fold, y_pred)
+        print(f"MCC (Fold {i + 1}): {mcc}")
 
         models.append(model)
 
@@ -753,7 +757,7 @@ class ToTensor(object):
         # numpy image: H x W x C
         # torch image: C x H x W
         image = image.transpose((2, 0, 1))
-        image = torch.from_numpy(image)
+        image = torch.tensor(image, dtype=torch.int64)
 
         return image
 
@@ -763,13 +767,17 @@ class NFLDataset(Dataset):
         self,
         labels,
         path_to_frames,
+        is_player=True,
         view="Sideline",
-        transform=transforms.Compose([Rescale((720, 1280)), ToTensor()]),
+        transform=transforms.Compose([Rescale((256, 256)), ToTensor()]),
+        target_transform=Lambda(lambda y: torch.tensor(y, dtype=torch.int64)),
     ):
         self.labels = labels
         self.path_to_frames = path_to_frames
+        self.is_player = is_player
         self.view = view
         self.transform = transform
+        self.target_transform = target_transform
 
     def __len__(self):
         return len(self.labels)
@@ -788,20 +796,51 @@ class NFLDataset(Dataset):
 
         image = io.imread(img_name)
 
-        center_x = int(
-            label[[f"left_{view_lower}_1", f"left_{view_lower}_2"]].mean()
-            + (label[[f"width_{view_lower}_1", f"width_{view_lower}_2"]].mean() / 2)
+        left_1, width_1, top_1, height_1 = (
+            label[f"left_{view_lower}_1"],
+            label[f"width_{view_lower}_1"],
+            label[f"top_{view_lower}_1"],
+            label[f"height_{view_lower}_1"],
         )
-        center_y = int(
-            label[[f"top_{view_lower}_1", f"top_{view_lower}_2"]].mean()
-            + (label[[f"height_{view_lower}_1", f"height_{view_lower}_2"]].mean() / 2)
+        image = cv2.rectangle(
+            image, (left_1, top_1), (left_1 + width_1, top_1 + height_1), (255, 0, 0)
         )
+
+        if self.is_player:
+            left_2, width_2, top_2, height_2 = (
+                label[f"left_{view_lower}_2"],
+                label[f"width_{view_lower}_2"],
+                label[f"top_{view_lower}_2"],
+                label[f"height_{view_lower}_2"],
+            )
+            image = cv2.rectangle(
+                image,
+                (left_2, top_2),
+                (left_2 + width_2, top_2 + height_2),
+                (255, 0, 0),
+            )
+
+            center_x = int(((left_1 + left_2) / 2) + ((width_1 + width_2) / 4))
+            center_y = int(((top_1 + top_2) / 2) + ((height_1 + height_2) / 4))
+
+            image = image[
+                center_y - 128 : center_y + 128, center_x - 128 : center_x + 128
+            ]
+            image = self.transform(image)
+
+            contact = label["contact"]
+            contact = self.target_transform(contact)
+
+            return image, contact
+
+        center_x = int(left_1 + (width_1 / 2))
+        center_y = int(top_1 + (height_1 / 2))
 
         image = image[center_y - 128 : center_y + 128, center_x - 128 : center_x + 128]
         image = self.transform(image)
 
         contact = label["contact"]
-        contact = torch.tensor(contact, dtype=torch.int)
+        contact = self.target_transform(contact)
 
         return image, contact
 
