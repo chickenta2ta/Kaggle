@@ -7,10 +7,11 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy.optimize import minimize
-from skimage import io
+from skimage import io, transform
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
+from torchvision import transforms
 from torchvision.models import resnet152
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
@@ -28,9 +29,7 @@ TEST_VIDEO_METADATA = "test_video_metadata.csv"
 
 SUBMISSION = "submission.csv"
 
-PATH_TO_TRAIN_FRAMES = (
-    "../input/nfl-contact-extracted-train-frames/content/work/frames/train"
-)
+PATH_TO_TRAIN_FRAMES = "../input/nfl-player-contact-detection-frames"
 
 PATH_TO_WEIGHTS = "../input/resnet152-weightsimagenet1k-v2/resnet152-f82ba261.pth"
 
@@ -720,6 +719,77 @@ def predict_on_test_data(
     else:
         mcc = matthews_corrcoef(test_labels["contact"], test_labels["contact_pred"])
         print(f"MCC: {mcc}")
+
+
+class Rescale(object):
+    def __init__(self, output_size):
+        assert isinstance(output_size, tuple)
+        self.output_size = output_size
+
+    def __call__(self, image):
+        image = transform.resize(image, self.output_size)
+
+        return image
+
+
+class ToTensor(object):
+    def __call__(self, image):
+
+        # swap color axis because
+        # numpy image: H x W x C
+        # torch image: C x H x W
+        image = image.transpose((2, 0, 1))
+        image = torch.from_numpy(image)
+
+        return image
+
+
+class NFLDataset(Dataset):
+    def __init__(
+        self,
+        labels,
+        path_to_frames,
+        view="Sideline",
+        transform=transforms.Compose([Rescale((720, 1280)), ToTensor()]),
+    ):
+        self.labels = labels
+        self.path_to_frames = path_to_frames
+        self.view = view
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.to_list()
+
+        label = self.labels.iloc[idx]
+
+        view_lower = self.view.lower()
+        game_play, frame = label["game_play"], int(label[f"frame_{view_lower}"])
+        img_name = os.path.join(
+            self.path_to_frames, f"{game_play}_{self.view}_{frame}.jpg"
+        )
+
+        image = io.imread(img_name)
+
+        center_x = int(
+            label[[f"left_{view_lower}_1", f"left_{view_lower}_2"]].mean()
+            + (label[[f"width_{view_lower}_1", f"width_{view_lower}_2"]].mean() / 2)
+        )
+        center_y = int(
+            label[[f"top_{view_lower}_1", f"top_{view_lower}_2"]].mean()
+            + (label[[f"height_{view_lower}_1", f"height_{view_lower}_2"]].mean() / 2)
+        )
+
+        image = image[center_y - 128 : center_y + 128, center_x - 128 : center_x + 128]
+        image = self.transform(image)
+
+        contact = label["contact"]
+        contact = torch.tensor(contact, dtype=torch.int)
+
+        return image, contact
 
 
 train_labels = join_player_tracking_and_baseline_helmets_to_labels(
