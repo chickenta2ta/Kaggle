@@ -314,6 +314,23 @@ def calculate_iou(labels):
     return labels, feature_columns
 
 
+def calculate_helmets_distance(labels):
+    feature_columns = []
+    for view in ["sideline", "endzone"]:
+        center_x_1 = labels[f"left_{view}_1"] + (labels[f"width_{view}_1"] / 2)
+        center_y_1 = labels[f"top_{view}_1"] + (labels[f"height_{view}_1"] / 2)
+
+        center_x_2 = labels[f"left_{view}_2"] + (labels[f"width_{view}_2"] / 2)
+        center_y_2 = labels[f"top_{view}_2"] + (labels[f"height_{view}_2"] / 2)
+
+        labels[f"helmets_distance_{view}"] = np.sqrt(
+            ((center_x_1 - center_x_2) ** 2) + ((center_y_1 - center_y_2) ** 2)
+        )
+        feature_columns.append(f"helmets_distance_{view}")
+
+    return labels, feature_columns
+
+
 def calculate_moving_average(labels, column_names, windows=[10]):
     feature_columns = []
 
@@ -352,7 +369,7 @@ def create_features_for_player(
     product_columns=["speed", "distance", "acceleration"],
     player_tracking_difference_columns=["speed", "direction", "orientation"],
     baseline_helmets_difference_columns=["left", "width", "top", "height"],
-    sum_columns=["sa", "iou"],
+    sum_columns=["sa", "iou", "helmets_distance"],
     append_endzone_1_and_2_moving_average_columns=["top"],
     product_moving_average_columns=["speed", "acceleration"],
     player_tracking_difference_moving_average_columns=["direction", "orientation"],
@@ -397,6 +414,13 @@ def create_features_for_player(
     necessary_columns = append_1_and_2(necessary_columns)
     if column_exists(labels, necessary_columns):
         labels, columns = calculate_iou(labels)
+        feature_columns += columns
+
+    necessary_columns = ["left", "width", "top", "height"]
+    necessary_columns = append_sideline_and_endzone(necessary_columns)
+    necessary_columns = append_1_and_2(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = calculate_helmets_distance(labels)
         feature_columns += columns
 
     necessary_columns = ["team"]
