@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy.optimize import minimize
-from skimage import io, transform
+from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
@@ -196,6 +196,14 @@ def append_1(column_names):
     appended_column_names = []
     for column_name in column_names:
         appended_column_names.append(column_name + "_1")
+
+    return appended_column_names
+
+
+def append_2(column_names):
+    appended_column_names = []
+    for column_name in column_names:
+        appended_column_names.append(column_name + "_2")
 
     return appended_column_names
 
@@ -569,6 +577,37 @@ def get_indices_of_closer_than_threshold(labels, threshold=2):
         return pd.Series(True, index=labels.index)
 
 
+def matthews_corrcoef_(x, y_train, y_pred_train):
+    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
+    return -mcc
+
+
+def predict_lightgbm(
+    models,
+    X_train,
+    y_train,
+    X_test,
+    x0=[0.5],
+):
+    y_pred_train = np.zeros(len(X_train))
+    y_pred_test = np.zeros(len(X_test))
+
+    for model in models:
+        y_pred_train += model.predict(
+            X_train, num_iteration=model.best_iteration
+        ) / len(models)
+        y_pred_test += model.predict(X_test, num_iteration=model.best_iteration) / len(
+            models
+        )
+
+    res = minimize(
+        matthews_corrcoef_, x0, args=(y_train, y_pred_train), method="Nelder-Mead"
+    )
+    y_test = (y_pred_test > res.x[0]).astype("int")
+
+    return y_test
+
+
 def train_lightgbm(
     X_train,
     y_train,
@@ -655,37 +694,6 @@ def join_datetime_to_labels(sample_submission, player_tracking):
     return sample_submission
 
 
-def matthews_corrcoef_(x, y_train, y_pred_train):
-    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
-    return -mcc
-
-
-def predict_lightgbm(
-    models,
-    X_train,
-    y_train,
-    X_test,
-    x0=[0.5],
-):
-    y_pred_train = np.zeros(len(X_train))
-    y_pred_test = np.zeros(len(X_test))
-
-    for model in models:
-        y_pred_train += model.predict(
-            X_train, num_iteration=model.best_iteration
-        ) / len(models)
-        y_pred_test += model.predict(X_test, num_iteration=model.best_iteration) / len(
-            models
-        )
-
-    res = minimize(
-        matthews_corrcoef_, x0, args=(y_train, y_pred_train), method="Nelder-Mead"
-    )
-    y_test = (y_pred_test > res.x[0]).astype("int")
-
-    return y_test
-
-
 def predict_on_test_data(
     models_player,
     models_ground,
@@ -739,15 +747,56 @@ def predict_on_test_data(
         print(f"MCC: {mcc}")
 
 
-class Rescale(object):
-    def __init__(self, output_size):
-        assert isinstance(output_size, tuple)
-        self.output_size = output_size
+class CenterCrop(object):
+    def __init__(self, view="Sideline"):
+        self.view = view
 
-    def __call__(self, image):
-        image = transform.resize(image, self.output_size)
+    def __call__(self, image_and_label):
+        image, label = image_and_label["image"], image_and_label["label"]
+
+        columns = ["left", "width", "top", "height"]
+
+        if self.view == "Sideline":
+            columns = append_sideline(columns)
+        else:
+            columns = append_endzone(columns)
+        columns = append_1(columns) + append_2(columns)
+
+        bounding_boxes = label[columns]
+        bounding_boxes = bounding_boxes.to_numpy()
+        bounding_boxes = np.reshape(bounding_boxes, (-1, 4))
+
+        image = self.draw_rectangle(image, bounding_boxes)
+
+        center_x, center_y = self.get_center(bounding_boxes)
+        image = image[center_y - 128 : center_y + 128, center_x - 128 : center_x + 128]
 
         return image
+
+    def draw_rectangle(self, image, rectangles):
+        for rectangle in rectangles:
+            left, width, top, height = map(int, rectangle)
+            image = cv2.rectangle(
+                image, (left, top), (left + width, top + height), (255, 0, 0)
+            )
+
+        return image
+
+    def get_center(self, bounding_boxes):
+        m = np.nanmean(bounding_boxes, axis=0)
+
+        left, width, top, height = m[0], m[1], m[2], m[3]
+
+        center_x = left + (width / 2)
+        center_y = top + (height / 2)
+
+        center_x = int(center_x)
+        center_y = int(center_y)
+
+        center_x = np.clip(center_x, 128, 1151)
+        center_y = np.clip(center_y, 128, 591)
+
+        return center_x, center_y
 
 
 class ToTensor(object):
@@ -767,16 +816,13 @@ class NFLDataset(Dataset):
         self,
         labels,
         path_to_frames,
-        is_player=True,
         view="Sideline",
-        transform=transforms.Compose([Rescale((256, 256)), ToTensor()]),
         target_transform=Lambda(lambda y: torch.tensor(y, dtype=torch.int64)),
     ):
         self.labels = labels
         self.path_to_frames = path_to_frames
-        self.is_player = is_player
         self.view = view
-        self.transform = transform
+        self.transform = transforms.Compose([CenterCrop(view), ToTensor()])
         self.target_transform = target_transform
 
     def __len__(self):
@@ -795,49 +841,7 @@ class NFLDataset(Dataset):
         )
 
         image = io.imread(img_name)
-
-        left_1, width_1, top_1, height_1 = (
-            label[f"left_{view_lower}_1"],
-            label[f"width_{view_lower}_1"],
-            label[f"top_{view_lower}_1"],
-            label[f"height_{view_lower}_1"],
-        )
-        image = cv2.rectangle(
-            image, (left_1, top_1), (left_1 + width_1, top_1 + height_1), (255, 0, 0)
-        )
-
-        if self.is_player:
-            left_2, width_2, top_2, height_2 = (
-                label[f"left_{view_lower}_2"],
-                label[f"width_{view_lower}_2"],
-                label[f"top_{view_lower}_2"],
-                label[f"height_{view_lower}_2"],
-            )
-            image = cv2.rectangle(
-                image,
-                (left_2, top_2),
-                (left_2 + width_2, top_2 + height_2),
-                (255, 0, 0),
-            )
-
-            center_x = int(((left_1 + left_2) / 2) + ((width_1 + width_2) / 4))
-            center_y = int(((top_1 + top_2) / 2) + ((height_1 + height_2) / 4))
-
-            image = image[
-                center_y - 128 : center_y + 128, center_x - 128 : center_x + 128
-            ]
-            image = self.transform(image)
-
-            contact = label["contact"]
-            contact = self.target_transform(contact)
-
-            return image, contact
-
-        center_x = int(left_1 + (width_1 / 2))
-        center_y = int(top_1 + (height_1 / 2))
-
-        image = image[center_y - 128 : center_y + 128, center_x - 128 : center_x + 128]
-        image = self.transform(image)
+        image = self.transform({"image": image, "label": label})
 
         contact = label["contact"]
         contact = self.target_transform(contact)
