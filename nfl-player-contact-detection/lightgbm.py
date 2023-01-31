@@ -885,7 +885,9 @@ class NFLDataset(Dataset):
         label = self.labels.iloc[idx]
 
         view_lower = self.view.lower()
-        game_play, frame = label["game_play"], int(label[f"frame_{view_lower}"])
+        game_play, frame = label[["game_play", f"frame_{view_lower}"]].astype(
+            {f"frame_{view_lower}": "int"}
+        )
         img_name = os.path.join(
             self.path_to_frames, f"{game_play}_{self.view}_{frame}.jpg"
         )
