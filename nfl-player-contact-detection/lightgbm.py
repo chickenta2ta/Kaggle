@@ -266,67 +266,93 @@ def column_exists(labels, column_names):
 
 def calculate_iou(labels):
     feature_columns = []
-    for view in ["sideline", "endzone"]:
-        labels[f"right_{view}_1"] = labels[f"left_{view}_1"] + labels[f"width_{view}_1"]
-        labels[f"right_{view}_2"] = labels[f"left_{view}_2"] + labels[f"width_{view}_2"]
-        labels[f"dx_{view}"] = labels[[f"right_{view}_1", f"right_{view}_2"]].min(
-            axis=1, skipna=False
-        ) - labels[[f"left_{view}_1", f"left_{view}_2"]].max(axis=1, skipna=False)
+    for view in ["Sideline", "Endzone"]:
+        view_lower = view.lower()
 
-        labels[f"bottom_{view}_1"] = (
-            labels[f"top_{view}_1"] + labels[f"height_{view}_1"]
+        labels[f"right_{view_lower}_1"] = (
+            labels[f"left_{view_lower}_1"] + labels[f"width_{view_lower}_1"]
         )
-        labels[f"bottom_{view}_2"] = (
-            labels[f"top_{view}_2"] + labels[f"height_{view}_2"]
+        labels[f"right_{view_lower}_2"] = (
+            labels[f"left_{view_lower}_2"] + labels[f"width_{view_lower}_2"]
         )
-        labels[f"dy_{view}"] = labels[[f"bottom_{view}_1", f"bottom_{view}_2"]].min(
+        labels[f"dx_{view_lower}"] = labels[
+            [f"right_{view_lower}_1", f"right_{view_lower}_2"]
+        ].min(axis=1, skipna=False) - labels[
+            [f"left_{view_lower}_1", f"left_{view_lower}_2"]
+        ].max(
             axis=1, skipna=False
-        ) - labels[[f"top_{view}_1", f"top_{view}_2"]].max(axis=1, skipna=False)
+        )
 
-        has_intersection = (labels[f"dx_{view}"] > 0) & (labels[f"dy_{view}"] > 0)
+        labels[f"bottom_{view_lower}_1"] = (
+            labels[f"top_{view_lower}_1"] + labels[f"height_{view_lower}_1"]
+        )
+        labels[f"bottom_{view_lower}_2"] = (
+            labels[f"top_{view_lower}_2"] + labels[f"height_{view_lower}_2"]
+        )
+        labels[f"dy_{view_lower}"] = labels[
+            [f"bottom_{view_lower}_1", f"bottom_{view_lower}_2"]
+        ].min(axis=1, skipna=False) - labels[
+            [f"top_{view_lower}_1", f"top_{view_lower}_2"]
+        ].max(
+            axis=1, skipna=False
+        )
 
-        area_of_intersection = labels[f"dx_{view}"] * labels[f"dy_{view}"]
+        has_intersection = (labels[f"dx_{view_lower}"] > 0) & (
+            labels[f"dy_{view_lower}"] > 0
+        )
+
+        area_of_intersection = labels[f"dx_{view_lower}"] * labels[f"dy_{view_lower}"]
         area_of_intersection[~has_intersection] = 0
 
         area_of_union = (
-            (labels[f"height_{view}_1"] * labels[f"width_{view}_1"])
-            + (labels[f"height_{view}_2"] * labels[f"width_{view}_2"])
+            (labels[f"height_{view_lower}_1"] * labels[f"width_{view_lower}_1"])
+            + (labels[f"height_{view_lower}_2"] * labels[f"width_{view_lower}_2"])
             - area_of_intersection
         )
 
-        labels[f"iou_{view}"] = area_of_intersection / area_of_union
-        labels.fillna(value={f"iou_{view}": 0})
+        labels[f"iou_{view_lower}"] = area_of_intersection / area_of_union
+        labels.fillna(value={f"iou_{view_lower}": 0})
 
         labels.drop(
             columns=[
-                f"right_{view}_1",
-                f"right_{view}_2",
-                f"dx_{view}",
-                f"bottom_{view}_1",
-                f"bottom_{view}_2",
-                f"dy_{view}",
+                f"right_{view_lower}_1",
+                f"right_{view_lower}_2",
+                f"dx_{view_lower}",
+                f"bottom_{view_lower}_1",
+                f"bottom_{view_lower}_2",
+                f"dy_{view_lower}",
             ],
             inplace=True,
         )
 
-        feature_columns.append(f"iou_{view}")
+        feature_columns.append(f"iou_{view_lower}")
 
     return labels, feature_columns
 
 
 def calculate_helmets_distance(labels):
     feature_columns = []
-    for view in ["sideline", "endzone"]:
-        center_x_1 = labels[f"left_{view}_1"] + (labels[f"width_{view}_1"] / 2)
-        center_y_1 = labels[f"top_{view}_1"] + (labels[f"height_{view}_1"] / 2)
+    for view in ["Sideline", "Endzone"]:
+        view_lower = view.lower()
 
-        center_x_2 = labels[f"left_{view}_2"] + (labels[f"width_{view}_2"] / 2)
-        center_y_2 = labels[f"top_{view}_2"] + (labels[f"height_{view}_2"] / 2)
+        center_x_1 = labels[f"left_{view_lower}_1"] + (
+            labels[f"width_{view_lower}_1"] / 2
+        )
+        center_y_1 = labels[f"top_{view_lower}_1"] + (
+            labels[f"height_{view_lower}_1"] / 2
+        )
 
-        labels[f"helmets_distance_{view}"] = np.sqrt(
+        center_x_2 = labels[f"left_{view_lower}_2"] + (
+            labels[f"width_{view_lower}_2"] / 2
+        )
+        center_y_2 = labels[f"top_{view_lower}_2"] + (
+            labels[f"height_{view_lower}_2"] / 2
+        )
+
+        labels[f"helmets_distance_{view_lower}"] = np.sqrt(
             ((center_x_1 - center_x_2) ** 2) + ((center_y_1 - center_y_2) ** 2)
         )
-        feature_columns.append(f"helmets_distance_{view}")
+        feature_columns.append(f"helmets_distance_{view_lower}")
 
     return labels, feature_columns
 
@@ -775,8 +801,8 @@ class CenterCrop(object):
     def __init__(self, view="Sideline"):
         self.view = view
 
-    def __call__(self, image_and_label):
-        image, label = image_and_label["image"], image_and_label["label"]
+    def __call__(self, sample):
+        image, label = sample["image"], sample["label"]
 
         columns = ["left", "width", "top", "height"]
 
