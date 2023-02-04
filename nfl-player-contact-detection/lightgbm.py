@@ -12,8 +12,7 @@ from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
-from torchvision import transforms
-from torchvision.transforms import Lambda
+from torchvision.transforms import Compose, Lambda, Normalize, ToTensor
 
 # from torchvision.models import resnet152
 
@@ -849,31 +848,24 @@ class CenterCrop(object):
         return center_x, center_y
 
 
-class ToTensor(object):
-    def __call__(self, image):
-
-        # swap color axis because
-        # numpy image: H x W x C
-        # torch image: C x H x W
-        image = image.transpose((2, 0, 1))
-        image = torch.tensor(image, dtype=torch.int64)
-
-        return image
-
-
 class NFLDataset(Dataset):
     def __init__(
         self,
         labels,
         path_to_frames,
         view="Sideline",
-        target_transform=Lambda(lambda y: torch.tensor(y, dtype=torch.int64)),
     ):
         self.labels = labels
         self.path_to_frames = path_to_frames
         self.view = view
-        self.transform = transforms.Compose([CenterCrop(view), ToTensor()])
-        self.target_transform = target_transform
+        self.transform = Compose(
+            [
+                CenterCrop(view),
+                ToTensor(),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
+        self.target_transform = Lambda(lambda y: torch.tensor(y, dtype=torch.int64))
 
     def __len__(self):
         return len(self.labels)
@@ -885,9 +877,8 @@ class NFLDataset(Dataset):
         label = self.labels.iloc[idx]
 
         view_lower = self.view.lower()
-        game_play, frame = label[["game_play", f"frame_{view_lower}"]].astype(
-            {f"frame_{view_lower}": "int"}
-        )
+        game_play, frame = label[["game_play", f"frame_{view_lower}"]]
+        frame = int(frame)
         img_name = os.path.join(
             self.path_to_frames, f"{game_play}_{self.view}_{frame}.jpg"
         )
