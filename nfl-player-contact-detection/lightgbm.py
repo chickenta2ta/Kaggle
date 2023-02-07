@@ -7,14 +7,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from scipy.optimize import minimize
 from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
+from torchvision.models import resnet152
 from torchvision.transforms import Compose, Lambda, Normalize, ToTensor
-
-# from torchvision.models import resnet152
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
 PATH_TO_OUTPUT = "."
@@ -36,7 +36,13 @@ PATH_TO_TEST_VIDEOS = "../input/nfl-player-contact-detection/test"
 PATH_TO_TRAIN_FRAMES = "../input/nfl-player-contact-detection-frames"
 PATH_TO_TEST_FRAMES = "./nfl-player-contact-detection-frames"
 
-PATH_TO_WEIGHTS = "../input/resnet152-weightsimagenet1k-v2/resnet152-f82ba261.pth"
+PATH_TO_WEIGHTS = "../input/resnet152"
+
+RESNET152 = "resnet152.pth"
+RESNET152_PLAYER_SIDELINE = "resnet152_player_sideline.pth"
+RESNET152_PLAYER_ENDZONE = "resnet152_player_endzone.pth"
+RESNET152_GROUND_SIDELINE = "resnet152_ground_sideline.pth"
+RESNET152_GROUND_ENDZONE = "resnet152_ground_endzone.pth"
 
 train_labels = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_LABELS))
 train_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_PLAYER_TRACKING))
@@ -49,6 +55,12 @@ sample_submission = pd.read_csv(os.path.join(PATH_TO_INPUT, SAMPLE_SUBMISSION))
 test_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_PLAYER_TRACKING))
 test_baseline_helmets = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_BASELINE_HELMETS))
 test_video_metadata = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_VIDEO_METADATA))
+
+model_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152)
+model_player_sideline_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_PLAYER_SIDELINE)
+model_player_endzone_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_PLAYER_ENDZONE)
+model_ground_sideline_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_GROUND_SIDELINE)
+model_ground_endzone_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_GROUND_ENDZONE)
 
 # Endzone2 should be ignored as it is a merging error or something
 train_baseline_helmets = train_baseline_helmets[
@@ -746,6 +758,56 @@ def join_datetime_to_labels(sample_submission, player_tracking):
     return sample_submission
 
 
+def predict_resnet(
+    labels,
+    path_to_frames,
+    path_to_weights,
+    is_player=True,
+    view="Sideline",
+):
+    labels_copy = labels.copy()
+    view_lower = view.lower()
+
+    labels_copy = labels_copy[~labels_copy[f"frame_{view_lower}"].isnull()]
+    labels_copy = labels_copy[~labels_copy[f"left_{view_lower}_1"].isnull()]
+    if is_player:
+        labels_copy = labels_copy[~labels_copy[f"left_{view_lower}_2"].isnull()]
+
+    test_data = NFLDataset(labels_copy, path_to_frames, view=view)
+    test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=16)
+
+    model = resnet152()
+    model.fc = nn.Linear(2048, 1)
+    model.load_state_dict(torch.load(path_to_weights))
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = model.to(device)
+    probabilities = []
+
+    with torch.no_grad():
+        for batch in test_dataloader:
+            x, _ = batch
+            x = x.to(device)
+
+            y = model(x)
+            y = torch.sigmoid(y)
+
+            y = y.tolist()
+            probabilities += y
+
+    column_name = "probability_of_contact_resnet"
+    if is_player:
+        column_name += f"_player_{view_lower}"
+    else:
+        column_name += f"_ground_{view_lower}"
+
+    labels_copy[column_name] = probabilities
+    labels_copy = labels_copy[[column_name]]
+
+    return labels_copy
+
+
 def predict_on_test_data(
     models_player,
     models_ground,
@@ -767,6 +829,7 @@ def predict_on_test_data(
     )
     test_labels_ground, _ = create_features_for_ground(test_labels_ground)
 
+    # この辺から変わりそう
     y_name = "contact"
     if not is_submission:
         y_name += "_pred"
