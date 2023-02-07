@@ -31,7 +31,10 @@ TEST_VIDEO_METADATA = "test_video_metadata.csv"
 
 SUBMISSION = "submission.csv"
 
+PATH_TO_TEST_VIDEOS = "../input/nfl-player-contact-detection/test"
+
 PATH_TO_TRAIN_FRAMES = "../input/nfl-player-contact-detection-frames"
+PATH_TO_TEST_FRAMES = "./nfl-player-contact-detection-frames"
 
 PATH_TO_WEIGHTS = "../input/resnet152-weightsimagenet1k-v2/resnet152-f82ba261.pth"
 
@@ -796,6 +799,27 @@ def predict_on_test_data(
         print(f"MCC: {mcc}")
 
 
+def video_to_frames(video_metadata, path_to_videos, path_to_frames):
+    os.makedirs(path_to_frames, exist_ok=True)
+    for (game_play, view), _ in video_metadata.groupby(["game_play", "view"]):
+        game_play_view = game_play + "_" + view
+        cap = cv2.VideoCapture(os.path.join(path_to_videos, game_play_view + ".mp4"))
+
+        i = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+
+            if not ret:
+                break
+
+            cv2.imwrite(
+                os.path.join(path_to_frames, game_play_view + f"_{i}.jpg"), frame
+            )
+            i += 1
+
+        cap.release()
+
+
 class CenterCrop(object):
     def __init__(self, view="Sideline"):
         self.view = view
@@ -891,6 +915,9 @@ class NFLDataset(Dataset):
 
         return image, contact
 
+
+video_to_frames(test_video_metadata, PATH_TO_TEST_VIDEOS, PATH_TO_TEST_FRAMES)
+gc.collect()
 
 train_labels = join_player_tracking_and_baseline_helmets_to_labels(
     train_labels, train_player_tracking, train_baseline_helmets, train_video_metadata
