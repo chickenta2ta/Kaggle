@@ -722,6 +722,10 @@ def train_lightgbm(
     return models
 
 
+def train_resnet():
+    pass
+
+
 def split_contact_id(sample_submission):
     sample_submission[
         ["game", "play", "step", "nfl_player_id_1", "nfl_player_id_2"]
@@ -1125,7 +1129,7 @@ def predict_all(
             mcc = matthews_corrcoef(y_true, y_pred)
 
             print(f"MCC ({column_name}): {mcc}")
-            print(f"OptimizeResult ({column_name}): {res}")
+            print(f"OptimizeResult ({column_name}): {res.x[0]}")
 
     labels.loc[~is_close, "contact"] = 0
 
@@ -1182,6 +1186,8 @@ models_lightgbm_ground = train_lightgbm(
     train_labels_ground["contact"],
     train_labels_ground["game_play"],
 )
+
+# train_resnet()
 
 del train_labels_player, train_labels_ground
 gc.collect()
