@@ -5,10 +5,10 @@ import cv2
 import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.ma as ma
 import pandas as pd
 import torch
 import torch.nn as nn
-from scipy.optimize import minimize
 from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
@@ -34,15 +34,15 @@ SUBMISSION = "submission.csv"
 PATH_TO_TEST_VIDEOS = "../input/nfl-player-contact-detection/test"
 
 PATH_TO_TRAIN_FRAMES = "../input/nfl-player-contact-detection-frames"
-PATH_TO_TEST_FRAMES = "./nfl-player-contact-detection-frames"
+PATH_TO_TEST_FRAMES = "../../tmp/nfl-player-contact-detection-frames"
 
-PATH_TO_WEIGHTS = "../input/resnet152"
+PATH_TO_WEIGHTS = "../input/nfl-player-contact-detection-weights"
 
 RESNET152 = "resnet152.pth"
-RESNET152_PLAYER_SIDELINE = "resnet152_player_sideline.pth"
-RESNET152_PLAYER_ENDZONE = "resnet152_player_endzone.pth"
-RESNET152_GROUND_SIDELINE = "resnet152_ground_sideline.pth"
-RESNET152_GROUND_ENDZONE = "resnet152_ground_endzone.pth"
+RESNET152_PLAYER_SIDELINE = "resnet152-player-sideline.pth"
+RESNET152_PLAYER_ENDZONE = "resnet152-player-endzone.pth"
+RESNET152_GROUND_SIDELINE = "resnet152-ground-sideline.pth"
+RESNET152_GROUND_ENDZONE = "resnet152-ground-endzone.pth"
 
 train_labels = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_LABELS))
 train_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_PLAYER_TRACKING))
@@ -56,16 +56,45 @@ test_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_PLAYER_TRACK
 test_baseline_helmets = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_BASELINE_HELMETS))
 test_video_metadata = pd.read_csv(os.path.join(PATH_TO_INPUT, TEST_VIDEO_METADATA))
 
-model_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152)
-model_player_sideline_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_PLAYER_SIDELINE)
-model_player_endzone_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_PLAYER_ENDZONE)
-model_ground_sideline_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_GROUND_SIDELINE)
-model_ground_endzone_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152_GROUND_ENDZONE)
+resnet152_weights = os.path.join(PATH_TO_WEIGHTS, RESNET152)
+resnet152_player_sideline_weights = os.path.join(
+    PATH_TO_WEIGHTS, RESNET152_PLAYER_SIDELINE
+)
+resnet152_player_endzone_weights = os.path.join(
+    PATH_TO_WEIGHTS, RESNET152_PLAYER_ENDZONE
+)
+resnet152_ground_sideline_weights = os.path.join(
+    PATH_TO_WEIGHTS, RESNET152_GROUND_SIDELINE
+)
+resnet152_ground_endzone_weights = os.path.join(
+    PATH_TO_WEIGHTS, RESNET152_GROUND_ENDZONE
+)
 
 # Endzone2 should be ignored as it is a merging error or something
 train_baseline_helmets = train_baseline_helmets[
     train_baseline_helmets["view"] != "Endzone2"
 ]
+
+
+def video_to_frames(video_metadata, path_to_videos, path_to_frames):
+    os.makedirs(path_to_frames, exist_ok=True)
+    for (game_play, view), _ in video_metadata.groupby(["game_play", "view"]):
+        game_play_view = game_play + "_" + view
+        cap = cv2.VideoCapture(os.path.join(path_to_videos, game_play_view + ".mp4"))
+
+        i = 0
+        while cap.isOpened():
+            ret, frame = cap.read()
+
+            if not ret:
+                break
+
+            cv2.imwrite(
+                os.path.join(path_to_frames, game_play_view + f"_{i}.jpg"), frame
+            )
+            i += 1
+
+        cap.release()
 
 
 def join_baseline_helmets_to_labels(
@@ -276,6 +305,15 @@ def column_exists(labels, column_names):
             return False
 
     return True
+
+
+def get_indices_of_closer_than_threshold(labels, threshold=2):
+    necessary_columns = ["distance"]
+    if column_exists(labels, necessary_columns):
+        is_close = (labels["distance"] <= threshold) | labels["distance"].isnull()
+        return is_close
+    else:
+        return pd.Series(True, index=labels.index)
 
 
 def calculate_iou(labels):
@@ -632,46 +670,6 @@ def create_features_for_ground(
     return labels, feature_columns
 
 
-def get_indices_of_closer_than_threshold(labels, threshold=2):
-    necessary_columns = ["distance"]
-    if column_exists(labels, necessary_columns):
-        is_close = (labels["distance"] <= threshold) | labels["distance"].isnull()
-        return is_close
-    else:
-        return pd.Series(True, index=labels.index)
-
-
-def matthews_corrcoef_(x, y_train, y_pred_train):
-    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
-    return -mcc
-
-
-def predict_lightgbm(
-    models,
-    X_train,
-    y_train,
-    X_test,
-    x0=[0.5],
-):
-    y_pred_train = np.zeros(len(X_train))
-    y_pred_test = np.zeros(len(X_test))
-
-    for model in models:
-        y_pred_train += model.predict(
-            X_train, num_iteration=model.best_iteration
-        ) / len(models)
-        y_pred_test += model.predict(X_test, num_iteration=model.best_iteration) / len(
-            models
-        )
-
-    res = minimize(
-        matthews_corrcoef_, x0, args=(y_train, y_pred_train), method="Nelder-Mead"
-    )
-    y_test = (y_pred_test > res.x[0]).astype("int")
-
-    return y_test
-
-
 def train_lightgbm(
     X_train,
     y_train,
@@ -718,11 +716,6 @@ def train_lightgbm(
             callbacks=[lgb.early_stopping(stopping_rounds=stopping_rounds)],
         )
 
-        models = [model]
-        y_pred = predict_lightgbm(models, X_train_fold, y_train_fold, X_test_fold)
-        mcc = matthews_corrcoef(y_test_fold, y_pred)
-        print(f"MCC (Fold {i + 1}): {mcc}")
-
         models.append(model)
 
     return models
@@ -758,133 +751,29 @@ def join_datetime_to_labels(sample_submission, player_tracking):
     return sample_submission
 
 
-def predict_resnet(
-    labels,
-    path_to_frames,
-    path_to_weights,
-    is_player=True,
-    view="Sideline",
+def predict_lightgbm(
+    models,
+    X,
 ):
-    labels_copy = labels.copy()
-    view_lower = view.lower()
+    y = np.zeros(len(X))
 
-    labels_copy = labels_copy[~labels_copy[f"frame_{view_lower}"].isnull()]
-    labels_copy = labels_copy[~labels_copy[f"left_{view_lower}_1"].isnull()]
+    for model in models:
+        y += model.predict(X, num_iteration=model.best_iteration) / len(models)
+
+    return y
+
+
+def remove_nan_rows(labels, is_player, view_lower):
+    labels = labels[~labels[f"frame_{view_lower}"].isnull()]
+    labels = labels[~labels[f"left_{view_lower}_1"].isnull()]
     if is_player:
-        labels_copy = labels_copy[~labels_copy[f"left_{view_lower}_2"].isnull()]
+        labels = labels[~labels[f"left_{view_lower}_2"].isnull()]
 
-    test_data = NFLDataset(labels_copy, path_to_frames, view=view)
-    test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=16)
-
-    model = resnet152()
-    model.fc = nn.Linear(2048, 1)
-    model.load_state_dict(torch.load(path_to_weights))
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    model = model.to(device)
-    probabilities = []
-
-    with torch.no_grad():
-        for batch in test_dataloader:
-            x, _ = batch
-            x = x.to(device)
-
-            y = model(x)
-            y = torch.sigmoid(y)
-
-            y = y.tolist()
-            probabilities += y
-
-    column_name = "probability_of_contact_resnet"
-    if is_player:
-        column_name += f"_player_{view_lower}"
-    else:
-        column_name += f"_ground_{view_lower}"
-
-    labels_copy[column_name] = probabilities
-    labels_copy = labels_copy[[column_name]]
-
-    return labels_copy
-
-
-def predict_on_test_data(
-    models_player,
-    models_ground,
-    train_labels_player,
-    train_labels_ground,
-    test_labels,
-    feature_columns_player,
-    feature_columns_ground,
-    is_submission=True,
-):
-    test_labels_player, test_labels_ground = separate_player_and_ground(test_labels)
-
-    # Do not reset index. We rather want to keep the order of sample_submission.csv
-    # test_labels_player.reset_index(drop=True, inplace=True)
-    # test_labels_ground.reset_index(drop=True, inplace=True)
-
-    test_labels_player, _ = create_features_for_player(
-        test_labels_player, is_training=False
-    )
-    test_labels_ground, _ = create_features_for_ground(test_labels_ground)
-
-    # この辺から変わりそう
-    y_name = "contact"
-    if not is_submission:
-        y_name += "_pred"
-
-    test_labels_player[y_name] = predict_lightgbm(
-        models_player,
-        train_labels_player[feature_columns_player],
-        train_labels_player["contact"],
-        test_labels_player[feature_columns_player],
-    )
-    test_labels_ground[y_name] = predict_lightgbm(
-        models_ground,
-        train_labels_ground[feature_columns_ground],
-        train_labels_ground["contact"],
-        test_labels_ground[feature_columns_ground],
-    )
-
-    test_labels = pd.concat([test_labels_player, test_labels_ground])
-    test_labels.sort_index(inplace=True)
-
-    is_close = get_indices_of_closer_than_threshold(test_labels)
-    test_labels.loc[~is_close, y_name] = 0
-
-    if is_submission:
-        test_labels[["contact_id", "contact"]].to_csv(
-            os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
-        )
-    else:
-        mcc = matthews_corrcoef(test_labels["contact"], test_labels["contact_pred"])
-        print(f"MCC: {mcc}")
-
-
-def video_to_frames(video_metadata, path_to_videos, path_to_frames):
-    os.makedirs(path_to_frames, exist_ok=True)
-    for (game_play, view), _ in video_metadata.groupby(["game_play", "view"]):
-        game_play_view = game_play + "_" + view
-        cap = cv2.VideoCapture(os.path.join(path_to_videos, game_play_view + ".mp4"))
-
-        i = 0
-        while cap.isOpened():
-            ret, frame = cap.read()
-
-            if not ret:
-                break
-
-            cv2.imwrite(
-                os.path.join(path_to_frames, game_play_view + f"_{i}.jpg"), frame
-            )
-            i += 1
-
-        cap.release()
+    return labels
 
 
 class CenterCrop(object):
-    def __init__(self, view="Sideline"):
+    def __init__(self, view):
         self.view = view
 
     def __call__(self, sample):
@@ -911,6 +800,9 @@ class CenterCrop(object):
 
     def draw_rectangle(self, image, rectangles):
         for rectangle in rectangles:
+            if np.isnan(rectangle[0]):
+                continue
+
             left, width, top, height = map(int, rectangle)
             image = cv2.rectangle(
                 image, (left, top), (left + width, top + height), (255, 0, 0)
@@ -940,7 +832,7 @@ class NFLDataset(Dataset):
         self,
         labels,
         path_to_frames,
-        view="Sideline",
+        view,
     ):
         self.labels = labels
         self.path_to_frames = path_to_frames
@@ -979,6 +871,218 @@ class NFLDataset(Dataset):
         return image, contact
 
 
+def _predict_resnet(model, labels, path_to_frames, view):
+    data = NFLDataset(labels, path_to_frames, view)
+    dataloader = torch.utils.data.DataLoader(data, batch_size=512)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = model.to(device)
+
+    probabilities = []
+    with torch.no_grad():
+        for batch in dataloader:
+            x, _ = batch
+            x = x.to(device)
+
+            y = model(x)
+            y = torch.sigmoid(y)
+
+            y = torch.flatten(y)
+            y = y.tolist()
+            probabilities += y
+
+    return probabilities
+
+
+def predict_resnet(
+    labels,
+    path_to_frames,
+    path_to_weights,
+    is_player,
+    view,
+):
+    labels_columns = ["game_play", "contact"]
+
+    columns = ["frame"]
+    columns = append_sideline_and_endzone(columns)
+    labels_columns += columns
+
+    columns = ["left", "width", "top", "height"]
+    columns = append_sideline_and_endzone(columns)
+    columns = append_1_and_2(columns)
+    labels_columns += columns
+
+    is_close = get_indices_of_closer_than_threshold(labels)
+    labels_copy = labels.loc[is_close, labels_columns].copy()
+
+    view_lower = view.lower()
+
+    labels_copy = remove_nan_rows(labels_copy, is_player, view_lower)
+
+    model = resnet152()
+    model.fc = nn.Linear(2048, 1)
+    model.load_state_dict(torch.load(path_to_weights))
+
+    probabilities = _predict_resnet(model, labels_copy, path_to_frames, view)
+
+    column_name = "probability_of_contact_resnet"
+    if is_player:
+        column_name += f"_player_{view_lower}"
+    else:
+        column_name += f"_ground_{view_lower}"
+
+    labels_copy[column_name] = probabilities
+    labels_copy = labels_copy[[column_name]]
+
+    return labels_copy
+
+
+def predict_all(
+    models_lightgbm_player,
+    models_lightgbm_ground,
+    labels,
+    feature_columns_player,
+    feature_columns_ground,
+    path_to_frames,
+    weights_player_sideline,
+    weights_player_endzone,
+    weights_ground_sideline,
+    weights_ground_endzone,
+):
+    labels_player, labels_ground = separate_player_and_ground(labels)
+
+    # Do not reset index. We rather want to keep the order of sample_submission.csv
+    # test_labels_player.reset_index(drop=True, inplace=True)
+    # test_labels_ground.reset_index(drop=True, inplace=True)
+
+    labels_player, _ = create_features_for_player(labels_player, is_training=False)
+    labels_ground, _ = create_features_for_ground(labels_ground)
+
+    labels_player["probability_of_contact_lightgbm_player"] = predict_lightgbm(
+        models_lightgbm_player, labels_player[feature_columns_player]
+    )
+
+    probability_of_contact_resnet_player_sideline = predict_resnet(
+        labels_player,
+        path_to_frames,
+        weights_player_sideline,
+        True,
+        "Sideline",
+    )
+    labels_player = labels_player.merge(
+        probability_of_contact_resnet_player_sideline,
+        how="left",
+        left_index=True,
+        right_index=True,
+    )
+
+    probability_of_contact_resnet_player_endzone = predict_resnet(
+        labels_player,
+        path_to_frames,
+        weights_player_endzone,
+        True,
+        "Endzone",
+    )
+    labels_player = labels_player.merge(
+        probability_of_contact_resnet_player_endzone,
+        how="left",
+        left_index=True,
+        right_index=True,
+    )
+
+    labels_player["probability_of_contact_resnet_player"] = labels_player[
+        [
+            "probability_of_contact_resnet_player_sideline",
+            "probability_of_contact_resnet_player_endzone",
+        ]
+    ].mean(axis=1)
+
+    probability_of_contact_player = labels_player[
+        [
+            "probability_of_contact_lightgbm_player",
+            "probability_of_contact_resnet_player",
+        ]
+    ]
+    mx = ma.masked_array(
+        probability_of_contact_player, mask=probability_of_contact_player.isnull()
+    )
+    average = ma.average(mx, axis=1, weights=[0.6, 0.4])
+    labels_player["probability_of_contact"] = average.filled(fill_value=np.nan)
+    labels_player["contact"] = (
+        labels_player["probability_of_contact"] > 0.4164
+    ).astype("int")
+
+    labels_ground["probability_of_contact_lightgbm_ground"] = predict_lightgbm(
+        models_lightgbm_ground, labels_ground[feature_columns_ground]
+    )
+
+    probability_of_contact_resnet_ground_sideline = predict_resnet(
+        labels_ground,
+        path_to_frames,
+        weights_ground_sideline,
+        False,
+        "Sideline",
+    )
+    labels_ground = labels_ground.merge(
+        probability_of_contact_resnet_ground_sideline,
+        how="left",
+        left_index=True,
+        right_index=True,
+    )
+
+    probability_of_contact_resnet_ground_endzone = predict_resnet(
+        labels_ground,
+        path_to_frames,
+        weights_ground_endzone,
+        False,
+        "Endzone",
+    )
+    labels_ground = labels_ground.merge(
+        probability_of_contact_resnet_ground_endzone,
+        how="left",
+        left_index=True,
+        right_index=True,
+    )
+
+    labels_ground["probability_of_contact_resnet_ground"] = labels_ground[
+        [
+            "probability_of_contact_resnet_ground_sideline",
+            "probability_of_contact_resnet_ground_endzone",
+        ]
+    ].mean(axis=1)
+
+    probability_of_contact_ground = labels_ground[
+        [
+            "probability_of_contact_lightgbm_ground",
+            "probability_of_contact_resnet_ground",
+        ]
+    ]
+    mx = ma.masked_array(
+        probability_of_contact_ground, mask=probability_of_contact_ground.isnull()
+    )
+    average = ma.average(mx, axis=1, weights=[0.5, 0.5])
+    labels_ground["probability_of_contact"] = average.filled(fill_value=np.nan)
+    labels_ground["contact"] = (
+        labels_ground["probability_of_contact"] > 0.2500
+    ).astype("int")
+
+    labels = pd.concat([labels_player, labels_ground])
+    labels.sort_index(inplace=True)
+
+    is_close = get_indices_of_closer_than_threshold(labels)
+    labels.loc[~is_close, "contact"] = 0
+
+    labels[["contact_id", "contact"]].to_csv(
+        os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
+    )
+
+
+def matthews_corrcoef_(x, y_train, y_pred_train):
+    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
+    return -mcc
+
+
 video_to_frames(test_video_metadata, PATH_TO_TEST_VIDEOS, PATH_TO_TEST_FRAMES)
 gc.collect()
 
@@ -997,6 +1101,9 @@ train_labels, test_labels = train_labels.loc[train_index], train_labels.loc[test
 train_labels.reset_index(drop=True, inplace=True)
 test_labels.reset_index(drop=True, inplace=True)
 
+del train_index, test_index
+gc.collect()
+
 (
     train_labels_player,
     train_labels_ground,
@@ -1014,16 +1121,19 @@ train_labels_ground, feature_columns_ground = create_features_for_ground(
     train_labels_ground
 )
 
-models_player = train_lightgbm(
+models_lightgbm_player = train_lightgbm(
     train_labels_player[feature_columns_player],
     train_labels_player["contact"],
     train_labels_player["game_play"],
 )
-models_ground = train_lightgbm(
+models_lightgbm_ground = train_lightgbm(
     train_labels_ground[feature_columns_ground],
     train_labels_ground["contact"],
     train_labels_ground["game_play"],
 )
+
+del train_labels_player, train_labels_ground
+gc.collect()
 
 sample_submission = split_contact_id(sample_submission)
 sample_submission = join_datetime_to_labels(sample_submission, test_player_tracking)
@@ -1032,37 +1142,45 @@ sample_submission = join_player_tracking_and_baseline_helmets_to_labels(
     sample_submission, test_player_tracking, test_baseline_helmets, test_video_metadata
 )
 
-predict_on_test_data(
-    models_player,
-    models_ground,
-    train_labels_player,
-    train_labels_ground,
+del test_player_tracking, test_baseline_helmets, test_video_metadata
+gc.collect()
+
+predict_all(
+    models_lightgbm_player,
+    models_lightgbm_ground,
     sample_submission,
     feature_columns_player,
     feature_columns_ground,
+    PATH_TO_TEST_FRAMES,
+    resnet152_player_sideline_weights,
+    resnet152_player_endzone_weights,
+    resnet152_ground_sideline_weights,
+    resnet152_ground_endzone_weights,
 )
 
-# Evaluate the model before submission
-predict_on_test_data(
-    models_player,
-    models_ground,
-    train_labels_player,
-    train_labels_ground,
-    test_labels,
-    feature_columns_player,
-    feature_columns_ground,
-    is_submission=False,
-)
+# Evaluate models before submission
+# predict_all(
+#     models_lightgbm_player,
+#     models_lightgbm_ground,
+#     test_labels,
+#     feature_columns_player,
+#     feature_columns_ground,
+#     PATH_TO_TRAIN_FRAMES,
+#     resnet152_player_sideline_weights,
+#     resnet152_player_endzone_weights,
+#     resnet152_ground_sideline_weights,
+#     resnet152_ground_endzone_weights,
+# )
 
 # Visualize feature importance
 fig, axs = plt.subplots(2, figsize=(6.4 * 5, 4.8 * 5))
 lgb.plot_importance(
-    models_player[0],
+    models_lightgbm_player[0],
     ax=axs[0],
     title="Feature importance of player",
 )
 lgb.plot_importance(
-    models_ground[0],
+    models_lightgbm_ground[0],
     ax=axs[1],
     title="Feature importance of ground",
 )
