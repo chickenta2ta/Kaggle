@@ -9,6 +9,7 @@ import numpy.ma as ma
 import pandas as pd
 import torch
 import torch.nn as nn
+from scipy.optimize import minimize
 from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
@@ -938,6 +939,11 @@ def predict_resnet(
     return labels_copy
 
 
+def matthews_corrcoef_(x, y_train, y_pred_train):
+    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
+    return -mcc
+
+
 def predict_all(
     models_lightgbm_player,
     models_lightgbm_ground,
@@ -949,6 +955,7 @@ def predict_all(
     weights_player_endzone,
     weights_ground_sideline,
     weights_ground_endzone,
+    prints_mcc=False,
 ):
     labels_player, labels_ground = separate_player_and_ground(labels)
 
@@ -1009,6 +1016,12 @@ def predict_all(
     )
     average = ma.average(mx, axis=1, weights=[0.6, 0.4])
     labels_player["probability_of_contact"] = average.filled(fill_value=np.nan)
+
+    # probability_of_contact_[player/ground] is used when calculating mcc
+    labels_player["probability_of_contact_player"] = labels_player[
+        "probability_of_contact"
+    ]
+
     labels_player["contact"] = (
         labels_player["probability_of_contact"] > 0.4164
     ).astype("int")
@@ -1063,6 +1076,12 @@ def predict_all(
     )
     average = ma.average(mx, axis=1, weights=[0.5, 0.5])
     labels_ground["probability_of_contact"] = average.filled(fill_value=np.nan)
+
+    # probability_of_contact_[player/ground] is used when calculating mcc
+    labels_ground["probability_of_contact_ground"] = labels_ground[
+        "probability_of_contact"
+    ]
+
     labels_ground["contact"] = (
         labels_ground["probability_of_contact"] > 0.2500
     ).astype("int")
@@ -1071,16 +1090,48 @@ def predict_all(
     labels.sort_index(inplace=True)
 
     is_close = get_indices_of_closer_than_threshold(labels)
+
+    if prints_mcc:
+        probability_columns = [
+            "probability_of_contact_player",
+            "probability_of_contact_lightgbm_player",
+            "probability_of_contact_resnet_player",
+            "probability_of_contact_resnet_player_sideline",
+            "probability_of_contact_resnet_player_endzone",
+            "probability_of_contact_ground",
+            "probability_of_contact_lightgbm_ground",
+            "probability_of_contact_resnet_ground",
+            "probability_of_contact_resnet_ground_sideline",
+            "probability_of_contact_resnet_ground_endzone",
+        ]
+        x0 = [0.5]
+
+        for column_name in probability_columns:
+            labels.loc[~is_close, column_name] = 0
+
+            is_null = labels[column_name].isnull()
+
+            y_true = labels.loc[~is_null, "contact"]
+            y_pred = labels.loc[~is_null, column_name]
+
+            res = minimize(
+                matthews_corrcoef_,
+                x0,
+                args=(y_true, y_pred),
+                method="Nelder-Mead",
+            )
+
+            y_pred = (y_pred > res.x[0]).astype("int")
+            mcc = matthews_corrcoef(y_true, y_pred)
+
+            print(f"MCC ({column_name}): {mcc}")
+            print(f"OptimizeResult ({column_name}): {res}")
+
     labels.loc[~is_close, "contact"] = 0
 
     labels[["contact_id", "contact"]].to_csv(
         os.path.join(PATH_TO_OUTPUT, SUBMISSION), index=False
     )
-
-
-def matthews_corrcoef_(x, y_train, y_pred_train):
-    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
-    return -mcc
 
 
 video_to_frames(test_video_metadata, PATH_TO_TEST_VIDEOS, PATH_TO_TEST_FRAMES)
@@ -1159,18 +1210,19 @@ predict_all(
 )
 
 # Evaluate models before submission
-# predict_all(
-#     models_lightgbm_player,
-#     models_lightgbm_ground,
-#     test_labels,
-#     feature_columns_player,
-#     feature_columns_ground,
-#     PATH_TO_TRAIN_FRAMES,
-#     resnet152_player_sideline_weights,
-#     resnet152_player_endzone_weights,
-#     resnet152_ground_sideline_weights,
-#     resnet152_ground_endzone_weights,
-# )
+predict_all(
+    models_lightgbm_player,
+    models_lightgbm_ground,
+    test_labels,
+    feature_columns_player,
+    feature_columns_ground,
+    PATH_TO_TRAIN_FRAMES,
+    resnet152_player_sideline_weights,
+    resnet152_player_endzone_weights,
+    resnet152_ground_sideline_weights,
+    resnet152_ground_endzone_weights,
+    prints_mcc=True,
+)
 
 # Visualize feature importance
 fig, axs = plt.subplots(2, figsize=(6.4 * 5, 4.8 * 5))
