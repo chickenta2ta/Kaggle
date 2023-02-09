@@ -722,50 +722,19 @@ def train_lightgbm(
     return models
 
 
-def train_resnet():
-    pass
+def get_necessary_columns_for_resnet():
+    necessary_columns = ["game_play", "contact"]
 
+    columns = ["frame"]
+    columns = append_sideline_and_endzone(columns)
+    necessary_columns += columns
 
-def split_contact_id(sample_submission):
-    sample_submission[
-        ["game", "play", "step", "nfl_player_id_1", "nfl_player_id_2"]
-    ] = sample_submission["contact_id"].str.split("_", expand=True)
+    columns = ["left", "width", "top", "height"]
+    columns = append_sideline_and_endzone(columns)
+    columns = append_1_and_2(columns)
+    necessary_columns += columns
 
-    sample_submission["game_play"] = sample_submission["game"].str.cat(
-        sample_submission["play"], sep="_"
-    )
-    sample_submission.drop(columns=["game", "play"], inplace=True)
-
-    return sample_submission
-
-
-def join_datetime_to_labels(sample_submission, player_tracking):
-    player_tracking = player_tracking[["game_play", "datetime", "step"]]
-
-    player_tracking = player_tracking[
-        ~player_tracking.duplicated(subset=["game_play", "step"])
-    ]
-
-    sample_submission = sample_submission.astype({"step": "string"})
-    player_tracking = player_tracking.astype({"step": "string"})
-
-    sample_submission = sample_submission.merge(
-        player_tracking, how="left", on=["game_play", "step"]
-    )
-
-    return sample_submission
-
-
-def predict_lightgbm(
-    models,
-    X,
-):
-    y = np.zeros(len(X))
-
-    for model in models:
-        y += model.predict(X, num_iteration=model.best_iteration) / len(models)
-
-    return y
+    return necessary_columns
 
 
 def remove_nan_rows(labels, is_player, view_lower):
@@ -775,6 +744,16 @@ def remove_nan_rows(labels, is_player, view_lower):
         labels = labels[~labels[f"left_{view_lower}_2"].isnull()]
 
     return labels
+
+
+def preprocess_labels_for_resnet(labels, is_player, view_lower):
+    is_close = get_indices_of_closer_than_threshold(labels)
+    necessary_columns = get_necessary_columns_for_resnet()
+
+    labels_copy = labels.loc[is_close, necessary_columns].copy()
+    labels_copy = remove_nan_rows(labels_copy, is_player, view_lower)
+
+    return labels_copy
 
 
 class CenterCrop(object):
@@ -849,7 +828,12 @@ class NFLDataset(Dataset):
                 Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]
         )
-        self.target_transform = Lambda(lambda y: torch.tensor(y, dtype=torch.int64))
+        self.target_transform = Compose(
+            [
+                Lambda(lambda y: torch.tensor(y, dtype=torch.float32)),
+                Lambda(lambda y: torch.unsqueeze(y, 0)),
+            ]
+        )
 
     def __len__(self):
         return len(self.labels)
@@ -885,6 +869,7 @@ def _predict_resnet(model, labels, path_to_frames, view):
     model = model.to(device)
 
     probabilities = []
+    model.eval()
     with torch.no_grad():
         for batch in dataloader:
             x, _ = batch
@@ -900,6 +885,124 @@ def _predict_resnet(model, labels, path_to_frames, view):
     return probabilities
 
 
+def matthews_corrcoef_(x, y_train, y_pred_train):
+    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
+    return -mcc
+
+
+def optimize_threshold(y_true, y_pred, x0=[0.5]):
+    res = minimize(matthews_corrcoef_, x0, args=(y_true, y_pred), method="Nelder-Mead")
+
+    y_pred = (y_pred > res.x[0]).astype("int")
+    mcc = matthews_corrcoef(y_true, y_pred)
+
+    return mcc, res
+
+
+def train_resnet(
+    train_labels,
+    test_labels,
+    path_to_frames,
+    path_to_weights,
+    is_player,
+    view,
+):
+    view_lower = view.lower()
+
+    train_labels_copy = preprocess_labels_for_resnet(
+        train_labels, is_player, view_lower
+    )
+
+    torch.manual_seed(0)
+
+    training_data = NFLDataset(train_labels_copy, path_to_frames, view)
+    train_dataloader = torch.utils.data.DataLoader(training_data, batch_size=32)
+
+    model = resnet152()
+    model.load_state_dict(torch.load(path_to_weights))
+    model.fc = nn.Linear(2048, 1)
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = model.to(device)
+
+    size = len(train_dataloader.dataset)
+    model.train()
+    for batch, (X, y) in enumerate(train_dataloader):
+        X = X.to(device)
+        y = y.to(device)
+
+        pred = model(X)
+        loss = criterion(pred, y)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if batch % 100 == 0:
+            loss, current = loss.item(), batch * len(X)
+            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+
+    model_name = f"resnet152-{'player' if is_player else 'ground'}-{view_lower}.pth"
+    torch.save(model.state_dict(), os.path.join(".", model_name))
+
+    test_labels_copy = preprocess_labels_for_resnet(test_labels, is_player, view_lower)
+
+    y_true = test_labels_copy["contact"]
+    y_pred = _predict_resnet(model, test_labels_copy, path_to_frames, view)
+
+    mcc, res = optimize_threshold(y_true, y_pred)
+
+    model_description = f"ResNet for {'Player' if is_player else 'Ground'}/{view}"
+    print(f"MCC ({model_description}): {mcc}")
+    print(f"OptimizeResult ({model_description}): {res.x[0]}")
+
+
+def split_contact_id(sample_submission):
+    sample_submission[
+        ["game", "play", "step", "nfl_player_id_1", "nfl_player_id_2"]
+    ] = sample_submission["contact_id"].str.split("_", expand=True)
+
+    sample_submission["game_play"] = sample_submission["game"].str.cat(
+        sample_submission["play"], sep="_"
+    )
+    sample_submission.drop(columns=["game", "play"], inplace=True)
+
+    return sample_submission
+
+
+def join_datetime_to_labels(sample_submission, player_tracking):
+    player_tracking = player_tracking[["game_play", "datetime", "step"]]
+
+    player_tracking = player_tracking[
+        ~player_tracking.duplicated(subset=["game_play", "step"])
+    ]
+
+    sample_submission = sample_submission.astype({"step": "string"})
+    player_tracking = player_tracking.astype({"step": "string"})
+
+    sample_submission = sample_submission.merge(
+        player_tracking, how="left", on=["game_play", "step"]
+    )
+
+    return sample_submission
+
+
+def predict_lightgbm(
+    models,
+    X,
+):
+    y = np.zeros(len(X))
+
+    for model in models:
+        y += model.predict(X, num_iteration=model.best_iteration) / len(models)
+
+    return y
+
+
 def predict_resnet(
     labels,
     path_to_frames,
@@ -907,23 +1010,9 @@ def predict_resnet(
     is_player,
     view,
 ):
-    labels_columns = ["game_play", "contact"]
-
-    columns = ["frame"]
-    columns = append_sideline_and_endzone(columns)
-    labels_columns += columns
-
-    columns = ["left", "width", "top", "height"]
-    columns = append_sideline_and_endzone(columns)
-    columns = append_1_and_2(columns)
-    labels_columns += columns
-
-    is_close = get_indices_of_closer_than_threshold(labels)
-    labels_copy = labels.loc[is_close, labels_columns].copy()
-
     view_lower = view.lower()
 
-    labels_copy = remove_nan_rows(labels_copy, is_player, view_lower)
+    labels_copy = preprocess_labels_for_resnet(labels, is_player, view_lower)
 
     model = resnet152()
     model.fc = nn.Linear(2048, 1)
@@ -941,11 +1030,6 @@ def predict_resnet(
     labels_copy = labels_copy[[column_name]]
 
     return labels_copy
-
-
-def matthews_corrcoef_(x, y_train, y_pred_train):
-    mcc = matthews_corrcoef(y_train, y_pred_train > x[0])
-    return -mcc
 
 
 def predict_all(
@@ -1108,7 +1192,6 @@ def predict_all(
             "probability_of_contact_resnet_ground_sideline",
             "probability_of_contact_resnet_ground_endzone",
         ]
-        x0 = [0.5]
 
         for column_name in probability_columns:
             labels.loc[~is_close, column_name] = 0
@@ -1118,15 +1201,7 @@ def predict_all(
             y_true = labels.loc[~is_null, "contact"]
             y_pred = labels.loc[~is_null, column_name]
 
-            res = minimize(
-                matthews_corrcoef_,
-                x0,
-                args=(y_true, y_pred),
-                method="Nelder-Mead",
-            )
-
-            y_pred = (y_pred > res.x[0]).astype("int")
-            mcc = matthews_corrcoef(y_true, y_pred)
+            mcc, res = optimize_threshold(y_true, y_pred)
 
             print(f"MCC ({column_name}): {mcc}")
             print(f"OptimizeResult ({column_name}): {res.x[0]}")
@@ -1187,7 +1262,15 @@ models_lightgbm_ground = train_lightgbm(
     train_labels_ground["game_play"],
 )
 
-# train_resnet()
+# test_labels_player, _ = separate_player_and_ground(test_labels)
+# train_resnet(
+#     train_labels_player,
+#     test_labels_player,
+#     PATH_TO_TRAIN_FRAMES,
+#     resnet152_weights,
+#     True,
+#     "Sideline",
+# )
 
 del train_labels_player, train_labels_ground
 gc.collect()
