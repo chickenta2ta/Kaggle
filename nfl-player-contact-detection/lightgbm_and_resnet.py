@@ -9,12 +9,14 @@ import numpy.ma as ma
 import pandas as pd
 import torch
 import torch.nn as nn
+import torchvision
 from scipy.optimize import minimize
 from skimage import io
 from sklearn.metrics import matthews_corrcoef
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from torch.utils.data import Dataset
 from torchvision.models import resnet152
+from torchvision.models.detection import keypointrcnn_resnet50_fpn
 from torchvision.transforms import Compose, Lambda, Normalize, ToTensor
 
 PATH_TO_INPUT = "../input/nfl-player-contact-detection"
@@ -44,6 +46,7 @@ RESNET152_PLAYER_SIDELINE = "resnet152-player-sideline.pth"
 RESNET152_PLAYER_ENDZONE = "resnet152-player-endzone.pth"
 RESNET152_GROUND_SIDELINE = "resnet152-ground-sideline.pth"
 RESNET152_GROUND_ENDZONE = "resnet152-ground-endzone.pth"
+KEYPOINTRCNN_RESNET50_FPN = "keypointrcnn-resnet50-fpn.pth"
 
 train_labels = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_LABELS))
 train_player_tracking = pd.read_csv(os.path.join(PATH_TO_INPUT, TRAIN_PLAYER_TRACKING))
@@ -69,6 +72,9 @@ resnet152_ground_sideline_weights = os.path.join(
 )
 resnet152_ground_endzone_weights = os.path.join(
     PATH_TO_WEIGHTS, RESNET152_GROUND_ENDZONE
+)
+keypointrcnn_resnet50_fpn_weights = os.path.join(
+    PATH_TO_WEIGHTS, KEYPOINTRCNN_RESNET50_FPN
 )
 
 # Endzone2 should be ignored as it is a merging error or something
@@ -604,8 +610,140 @@ def create_features_for_player(
     return labels, feature_columns
 
 
+def pose_estimation(
+    labels,
+    path_to_frames,
+    path_to_weights,
+):
+    model = keypointrcnn_resnet50_fpn(pretrained_backbone=False)
+    model.load_state_dict(torch.load(path_to_weights))
+    torchvision.models.detection._utils.overwrite_eps(model, 0.0)
+    model.eval()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model = model.to(device)
+
+    for view in ["Sideline", "Endzone"]:
+        view_lower = view.lower()
+
+        necessary_columns = ["left", "width", "top", "height"]
+        feature_columns = [
+            "nose_y_relative_to_ankle_y",
+            "left_wrist_y_relative_to_ankle_y",
+            "right_wrist_y_relative_to_ankle_y",
+            "left_knee_y_relative_to_ankle_y",
+            "right_knee_y_relative_to_ankle_y",
+            "min_y_relative_to_ankle_y",
+        ]
+
+        if view == "Sideline":
+            necessary_columns = append_sideline(necessary_columns)
+            feature_columns = append_sideline(feature_columns)
+        else:
+            necessary_columns = append_endzone(necessary_columns)
+            feature_columns = append_endzone(feature_columns)
+        necessary_columns = append_1(necessary_columns)
+        feature_columns = append_1(feature_columns)
+
+        for (game_play, frame), group in labels.groupby(
+            ["game_play", f"frame_{view_lower}"]
+        ):
+            if np.isnan(frame):
+                continue
+
+            frame = int(frame)
+            img_name = os.path.join(path_to_frames, f"{game_play}_{view}_{frame}.jpg")
+
+            image = io.imread(img_name)
+            image = torchvision.transforms.functional.to_tensor(image)
+            image = image.unsqueeze(0)
+
+            image = image.to(device)
+
+            prediction = model(image)[0]
+
+            boxes = prediction["boxes"]
+            scores = prediction["scores"]
+            keypoints = prediction["keypoints"]
+
+            boxes = boxes.detach().cpu().numpy()
+            scores = scores.detach().cpu().numpy()
+            keypoints = keypoints.detach().cpu().numpy()
+
+            is_confident = scores > 0.25
+            boxes = boxes[is_confident]
+            keypoints = keypoints[is_confident]
+
+            boxes_topleft, boxes_bottomright = np.hsplit(boxes, 2)
+
+            for row in group[necessary_columns].itertuples():
+                index, left, width, top, height = row
+
+                if np.isnan(left):
+                    continue
+
+                right = left + width
+                bottom = top + height
+
+                left += width * 0.05
+                top += height * 0.05
+                right -= width * 0.05
+                bottom -= height * 0.05
+
+                boxes_topleft_player = boxes_topleft <= np.array([left, top])
+                boxes_bottomright_player = boxes_bottomright >= np.array(
+                    [right, bottom]
+                )
+                boxes_player = np.hstack(
+                    (boxes_topleft_player, boxes_bottomright_player)
+                )
+                boxes_player = np.all(boxes_player, axis=1)
+
+                keypoints_player = keypoints[boxes_player]
+
+                if keypoints_player.size == 0:
+                    continue
+
+                keypoint_player = keypoints_player[0]
+                (
+                    nose_y,
+                    left_wrist_y,
+                    right_wrist_y,
+                    left_knee_y,
+                    right_knee_y,
+                    left_ankle_y,
+                    right_ankle_y,
+                ) = keypoint_player[[0, 9, 10, 13, 14, 15, 16], 1]
+
+                ankle_y = (left_ankle_y + right_ankle_y) / 2
+
+                nose_y_relative_to_ankle_y = ankle_y - nose_y
+                left_wrist_y_relative_to_ankle_y = ankle_y - left_wrist_y
+                right_wrist_y_relative_to_ankle_y = ankle_y - right_wrist_y
+                left_knee_y_relative_to_ankle_y = ankle_y - left_knee_y
+                right_knee_y_relative_to_ankle_y = ankle_y - right_knee_y
+
+                min_y_relative_to_ankle_y = ankle_y - max(
+                    nose_y, left_wrist_y, right_wrist_y, left_knee_y, right_knee_y
+                )
+
+                labels.loc[index, feature_columns] = (
+                    nose_y_relative_to_ankle_y,
+                    left_wrist_y_relative_to_ankle_y,
+                    right_wrist_y_relative_to_ankle_y,
+                    left_knee_y_relative_to_ankle_y,
+                    right_knee_y_relative_to_ankle_y,
+                    min_y_relative_to_ankle_y,
+                )
+
+    return labels, feature_columns
+
+
 def create_features_for_ground(
     labels,
+    path_to_frames,
+    path_to_weights,
     append_1_columns=[
         "x_position",
         "y_position",
@@ -643,6 +781,13 @@ def create_features_for_ground(
     necessary_columns = append_1(necessary_columns)
     if column_exists(labels, necessary_columns):
         feature_columns += necessary_columns
+
+    necessary_columns = ["left", "width", "top", "height"]
+    necessary_columns = append_sideline_and_endzone(necessary_columns)
+    necessary_columns = append_1(necessary_columns)
+    if column_exists(labels, necessary_columns):
+        labels, columns = pose_estimation(labels, path_to_frames, path_to_weights)
+        feature_columns += columns
 
     # Add moving average features
     necessary_columns = append_1(append_1_moving_average_columns)
@@ -1039,10 +1184,11 @@ def predict_all(
     feature_columns_player,
     feature_columns_ground,
     path_to_frames,
-    weights_player_sideline,
-    weights_player_endzone,
-    weights_ground_sideline,
-    weights_ground_endzone,
+    weights_resnet152_player_sideline,
+    weights_resnet152_player_endzone,
+    weights_resnet152_ground_sideline,
+    weights_resnet152_ground_endzone,
+    weights_keypointrcnn_resnet50_fpn,
     prints_mcc=False,
 ):
     labels_player, labels_ground = separate_player_and_ground(labels)
@@ -1052,7 +1198,9 @@ def predict_all(
     # test_labels_ground.reset_index(drop=True, inplace=True)
 
     labels_player, _ = create_features_for_player(labels_player, is_training=False)
-    labels_ground, _ = create_features_for_ground(labels_ground)
+    labels_ground, _ = create_features_for_ground(
+        labels_ground, path_to_frames, weights_keypointrcnn_resnet50_fpn
+    )
 
     labels_player["probability_of_contact_lightgbm_player"] = predict_lightgbm(
         models_lightgbm_player, labels_player[feature_columns_player]
@@ -1061,7 +1209,7 @@ def predict_all(
     probability_of_contact_resnet_player_sideline = predict_resnet(
         labels_player,
         path_to_frames,
-        weights_player_sideline,
+        weights_resnet152_player_sideline,
         True,
         "Sideline",
     )
@@ -1075,7 +1223,7 @@ def predict_all(
     probability_of_contact_resnet_player_endzone = predict_resnet(
         labels_player,
         path_to_frames,
-        weights_player_endzone,
+        weights_resnet152_player_endzone,
         True,
         "Endzone",
     )
@@ -1121,7 +1269,7 @@ def predict_all(
     probability_of_contact_resnet_ground_sideline = predict_resnet(
         labels_ground,
         path_to_frames,
-        weights_ground_sideline,
+        weights_resnet152_ground_sideline,
         False,
         "Sideline",
     )
@@ -1135,7 +1283,7 @@ def predict_all(
     probability_of_contact_resnet_ground_endzone = predict_resnet(
         labels_ground,
         path_to_frames,
-        weights_ground_endzone,
+        weights_resnet152_ground_endzone,
         False,
         "Endzone",
     )
@@ -1248,7 +1396,7 @@ train_labels_player, feature_columns_player = create_features_for_player(
     train_labels_player
 )
 train_labels_ground, feature_columns_ground = create_features_for_ground(
-    train_labels_ground
+    train_labels_ground, PATH_TO_TRAIN_FRAMES, keypointrcnn_resnet50_fpn_weights
 )
 
 models_lightgbm_player = train_lightgbm(
@@ -1296,6 +1444,7 @@ predict_all(
     resnet152_player_endzone_weights,
     resnet152_ground_sideline_weights,
     resnet152_ground_endzone_weights,
+    keypointrcnn_resnet50_fpn_weights,
 )
 
 # Evaluate models before submission
@@ -1310,6 +1459,7 @@ predict_all(
     resnet152_player_endzone_weights,
     resnet152_ground_sideline_weights,
     resnet152_ground_endzone_weights,
+    keypointrcnn_resnet50_fpn_weights,
     prints_mcc=True,
 )
 
