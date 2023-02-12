@@ -615,6 +615,8 @@ def pose_estimation(
     path_to_frames,
     path_to_weights,
 ):
+    feature_columns = []
+
     model = keypointrcnn_resnet50_fpn(pretrained_backbone=False)
     model.load_state_dict(torch.load(path_to_weights))
     torchvision.models.detection._utils.overwrite_eps(model, 0.0)
@@ -628,7 +630,7 @@ def pose_estimation(
         view_lower = view.lower()
 
         necessary_columns = ["left", "width", "top", "height"]
-        feature_columns = [
+        new_column_names = [
             "nose_y_relative_to_ankle_y",
             "left_wrist_y_relative_to_ankle_y",
             "right_wrist_y_relative_to_ankle_y",
@@ -639,12 +641,12 @@ def pose_estimation(
 
         if view == "Sideline":
             necessary_columns = append_sideline(necessary_columns)
-            feature_columns = append_sideline(feature_columns)
+            new_column_names = append_sideline(new_column_names)
         else:
             necessary_columns = append_endzone(necessary_columns)
-            feature_columns = append_endzone(feature_columns)
+            new_column_names = append_endzone(new_column_names)
         necessary_columns = append_1(necessary_columns)
-        feature_columns = append_1(feature_columns)
+        new_column_names = append_1(new_column_names)
 
         for (game_play, frame), group in labels.groupby(
             ["game_play", f"frame_{view_lower}"]
@@ -728,7 +730,7 @@ def pose_estimation(
                     nose_y, left_wrist_y, right_wrist_y, left_knee_y, right_knee_y
                 )
 
-                labels.loc[index, feature_columns] = (
+                labels.loc[index, new_column_names] = (
                     nose_y_relative_to_ankle_y,
                     left_wrist_y_relative_to_ankle_y,
                     right_wrist_y_relative_to_ankle_y,
@@ -736,6 +738,13 @@ def pose_estimation(
                     right_knee_y_relative_to_ankle_y,
                     min_y_relative_to_ankle_y,
                 )
+
+        feature_columns += new_column_names
+
+    labels["min_y_relative_to_ankle_y_1"] = labels[
+        ["min_y_relative_to_ankle_y_sideline_1", "min_y_relative_to_ankle_y_endzone_1"]
+    ].mean(axis=1)
+    feature_columns.append("min_y_relative_to_ankle_y_1")
 
     return labels, feature_columns
 
@@ -812,6 +821,76 @@ def create_features_for_ground(
             labels, necessary_columns, windows=[10, 20, 30]
         )
         feature_columns += columns
+
+    return labels, feature_columns
+
+
+def create_features_for_ground_stub():
+    labels = pd.read_csv(
+        os.path.join(
+            "../input/nfl-player-contact-detection-preprocessed-data",
+            "train_labels_ground.csv",
+        )
+    )
+    feature_columns = [
+        "x_position_1",
+        "y_position_1",
+        "speed_1",
+        "distance_1",
+        "direction_1",
+        "orientation_1",
+        "acceleration_1",
+        "sa_1",
+        "left_sideline_1",
+        "width_sideline_1",
+        "top_sideline_1",
+        "height_sideline_1",
+        "width_endzone_1",
+        "top_endzone_1",
+        "nose_y_relative_to_ankle_y_sideline_1",
+        "left_wrist_y_relative_to_ankle_y_sideline_1",
+        "right_wrist_y_relative_to_ankle_y_sideline_1",
+        "left_knee_y_relative_to_ankle_y_sideline_1",
+        "right_knee_y_relative_to_ankle_y_sideline_1",
+        "min_y_relative_to_ankle_y_sideline_1",
+        "nose_y_relative_to_ankle_y_endzone_1",
+        "left_wrist_y_relative_to_ankle_y_endzone_1",
+        "right_wrist_y_relative_to_ankle_y_endzone_1",
+        "left_knee_y_relative_to_ankle_y_endzone_1",
+        "right_knee_y_relative_to_ankle_y_endzone_1",
+        "min_y_relative_to_ankle_y_endzone_1",
+        "min_y_relative_to_ankle_y_1",
+        "x_position_1_moving_average_10",
+        "x_position_1_moving_average_20",
+        "x_position_1_moving_average_30",
+        "y_position_1_moving_average_10",
+        "y_position_1_moving_average_20",
+        "y_position_1_moving_average_30",
+        "speed_1_moving_average_10",
+        "speed_1_moving_average_20",
+        "speed_1_moving_average_30",
+        "orientation_1_moving_average_10",
+        "orientation_1_moving_average_20",
+        "orientation_1_moving_average_30",
+        "sa_1_moving_average_10",
+        "sa_1_moving_average_20",
+        "sa_1_moving_average_30",
+        "left_sideline_1_moving_average_10",
+        "left_sideline_1_moving_average_20",
+        "left_sideline_1_moving_average_30",
+        "top_sideline_1_moving_average_10",
+        "top_sideline_1_moving_average_20",
+        "top_sideline_1_moving_average_30",
+        "height_sideline_1_moving_average_10",
+        "height_sideline_1_moving_average_20",
+        "height_sideline_1_moving_average_30",
+        "width_endzone_1_moving_average_10",
+        "width_endzone_1_moving_average_20",
+        "width_endzone_1_moving_average_30",
+        "top_endzone_1_moving_average_10",
+        "top_endzone_1_moving_average_20",
+        "top_endzone_1_moving_average_30",
+    ]
 
     return labels, feature_columns
 
@@ -1395,9 +1474,12 @@ gc.collect()
 train_labels_player, feature_columns_player = create_features_for_player(
     train_labels_player
 )
-train_labels_ground, feature_columns_ground = create_features_for_ground(
-    train_labels_ground, PATH_TO_TRAIN_FRAMES, keypointrcnn_resnet50_fpn_weights
-)
+# train_labels_ground, feature_columns_ground = create_features_for_ground(
+#     train_labels_ground, PATH_TO_TRAIN_FRAMES, keypointrcnn_resnet50_fpn_weights
+# )
+
+# Use stub to avoid long computation time
+train_labels_ground, feature_columns_ground = create_features_for_ground_stub()
 
 models_lightgbm_player = train_lightgbm(
     train_labels_player[feature_columns_player],
