@@ -720,15 +720,20 @@ def pose_estimation(
 
                 ankle_y = (left_ankle_y + right_ankle_y) / 2
 
-                nose_y_relative_to_ankle_y = ankle_y - nose_y
-                left_wrist_y_relative_to_ankle_y = ankle_y - left_wrist_y
-                right_wrist_y_relative_to_ankle_y = ankle_y - right_wrist_y
-                left_knee_y_relative_to_ankle_y = ankle_y - left_knee_y
-                right_knee_y_relative_to_ankle_y = ankle_y - right_knee_y
+                box_size = boxes[boxes_player][0].size
 
-                min_y_relative_to_ankle_y = ankle_y - max(
-                    nose_y, left_wrist_y, right_wrist_y, left_knee_y, right_knee_y
-                )
+                nose_y_relative_to_ankle_y = (ankle_y - nose_y) / box_size
+                left_wrist_y_relative_to_ankle_y = (ankle_y - left_wrist_y) / box_size
+                right_wrist_y_relative_to_ankle_y = (ankle_y - right_wrist_y) / box_size
+                left_knee_y_relative_to_ankle_y = (ankle_y - left_knee_y) / box_size
+                right_knee_y_relative_to_ankle_y = (ankle_y - right_knee_y) / box_size
+
+                min_y_relative_to_ankle_y = (
+                    ankle_y
+                    - max(
+                        nose_y, left_wrist_y, right_wrist_y, left_knee_y, right_knee_y
+                    )
+                ) / box_size
 
                 labels.loc[index, new_column_names] = (
                     nose_y_relative_to_ankle_y,
