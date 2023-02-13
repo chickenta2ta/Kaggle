@@ -394,23 +394,24 @@ def calculate_helmets_distance(labels):
     for view in ["Sideline", "Endzone"]:
         view_lower = view.lower()
 
-        center_x_1 = labels[f"left_{view_lower}_1"] + (
-            labels[f"width_{view_lower}_1"] / 2
+        width_1, height_1 = (
+            labels[f"width_{view_lower}_1"],
+            labels[f"height_{view_lower}_1"],
         )
-        center_y_1 = labels[f"top_{view_lower}_1"] + (
-            labels[f"height_{view_lower}_1"] / 2
+        width_2, height_2 = (
+            labels[f"width_{view_lower}_2"],
+            labels[f"height_{view_lower}_2"],
         )
 
-        center_x_2 = labels[f"left_{view_lower}_2"] + (
-            labels[f"width_{view_lower}_2"] / 2
-        )
-        center_y_2 = labels[f"top_{view_lower}_2"] + (
-            labels[f"height_{view_lower}_2"] / 2
-        )
+        center_x_1 = labels[f"left_{view_lower}_1"] + (width_1 / 2)
+        center_y_1 = labels[f"top_{view_lower}_1"] + (height_1 / 2)
+
+        center_x_2 = labels[f"left_{view_lower}_2"] + (width_2 / 2)
+        center_y_2 = labels[f"top_{view_lower}_2"] + (height_2 / 2)
 
         labels[f"helmets_distance_{view_lower}"] = np.sqrt(
             ((center_x_1 - center_x_2) ** 2) + ((center_y_1 - center_y_2) ** 2)
-        )
+        ) / (((width_1 * height_1) + (width_2 * height_2)) / 2)
         feature_columns.append(f"helmets_distance_{view_lower}")
 
     return labels, feature_columns
