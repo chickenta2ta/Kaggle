@@ -207,7 +207,12 @@ def retrieve(topics, content, path_to_weights):
             ["topic_id", "content_id", "count", "distance"]
         ]
         topics_content_distances = topics_content_distances.astype(
-            {"topic_id": "S14", "content_id": "S14", "distance": "float"}
+            {
+                "topic_id": "S14",
+                "content_id": "S14",
+                "count": "int",
+                "distance": "float",
+            }
         )
 
         correlations_pred.append(topics_content_distances)
